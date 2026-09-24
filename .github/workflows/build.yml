@@ -1,0 +1,64 @@
+# Builds The Closet's installers on every platform.
+#   - Run it by hand from the Actions tab ("Run workflow"): installers are attached to the run.
+#   - Push a tag like v2.0.0: the installers are also published as a GitHub release, which is where
+#     the landing page's download links point (releases/latest/download/...).
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: --win --x64
+          - os: macos-14 # Apple silicon
+            args: --mac --arm64
+          - os: macos-13 # Intel
+            args: --mac --x64
+          - os: ubuntu-latest
+            args: --linux --x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build installers
+        run: npx electron-builder ${{ matrix.args }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false # unsigned builds (no code-signing certificate configured)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: the-closet-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

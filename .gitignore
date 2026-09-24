@@ -1,9 +1,9 @@
-# Paperwork is personal information. The ONLY files from dump/ that may enter git are the two
-# blank templates. Everything else in dump/ -- and any PDF anywhere else -- stays local.
-/dump/*
+# Paperwork is personal information. Nothing in dump/ ever enters git, and no PDF anywhere
+# except the two blank templates the app ships with.
+/dump/
 *.pdf
-!/dump/F10_nuked_final.pdf
-!/dump/F174_nuked_final.pdf
+!/resources/templates/F10_nuked_final.pdf
+!/resources/templates/F174_nuked_final.pdf
 
 # Parsed paperwork, page images and edits (personal information)
 /metadata/
@@ -11,7 +11,7 @@
 # Export of the official discipline tracker (personal information)
 /CS07 Discipline Tracker_google_sheet_format/
 
-# Local install
-/.venv/
-__pycache__/
-*.pyc
+# Build output and dependencies
+/node_modules/
+/dist/
+*.log

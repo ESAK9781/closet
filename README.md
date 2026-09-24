@@ -1,141 +1,121 @@
 # The Closet
 
-A paperwork tracker for AFCW Form 10s and AF Form 174s. Drop PDFs into `dump/` and The Closet
-reads them, works out what's filled in and who has signed, and gives you rows you can paste
-straight into the **Conduct Log** tab of the master discipline tracker.
+A desktop app for the first sergeant. Drop AFCW Form 10s and AF Form 174s into a folder and The
+Closet reads them, tracks who has signed, flags anything that needs a person, and gives you rows
+ready to paste into the **Conduct Log** tab of the master discipline tracker.
+
+Runs on Windows, macOS, and Linux. Everything stays on your computer. MIT licensed.
+
+`index.html` is the project's landing page.
 
 ## Install
 
-**Windows:** double-click **`Install The Closet.bat`**. It finds Python 3.10+ (or installs Python
-3.12 for your user account with winget or python.org, no admin rights needed), creates a private
-environment in `.venv`, installs the dependencies, and adds a **The Closet** shortcut to the
-Desktop and Start Menu. Run it again any time to repair or update. `Uninstall The Closet.bat`
-removes the shortcuts and `.venv` and leaves `dump/` and `metadata/` alone.
+Download the installer for your system (from the landing page or the repository's Releases):
 
-**macOS / Linux:** `./installer/install.sh` does the same thing, putting a launcher on the
-desktop (and in the Linux applications menu). Use `--uninstall` to remove it.
+| System | File |
+|---|---|
+| Windows | `The-Closet-Setup.exe` (installs, adds Desktop and Start Menu shortcuts), or `The-Closet-portable.exe` (no install) |
+| macOS | `The-Closet-mac-arm64.dmg` (Apple silicon) or `The-Closet-mac-x64.dmg` (Intel). Not notarized yet: the first time, right-click the app and choose Open. |
+| Linux | `The-Closet-linux-x86_64.AppImage`, or `The-Closet-linux-amd64.deb` for Debian/Ubuntu |
 
-## Start it
+## Using it
 
-Open **The Closet** from the desktop shortcut. It runs without a console window and opens in your
-browser. Clicking the shortcut again while it's running just brings it back up. It closes itself
-10 minutes after the last browser tab is closed, and a log is kept at `metadata/closet.log`.
+On first launch The Closet uses `Documents/The Closet/dump` for paperwork, with its `metadata`
+folder next to it. Pick a different dump folder in **Settings → Folders**. An existing
+`dump`/`metadata` pair from an earlier version carries straight over, edits included. PDFs are
+never moved or changed. You can also drag PDFs onto the window, which copies them into the dump
+folder.
 
-For a console instead: `The Closet.bat`, or `python run.py [--port 8765] [--no-browser]`.
+### Naming paperwork
 
-## Git and personal information
-
-Paperwork is personal information. `.gitignore` keeps everything in `dump/` out of git except the
-two blank templates. The same goes for any PDF elsewhere, `metadata/`, and the tracker HTML
-export. A pre-commit hook (`.githooks/pre-commit`, turned on by the installer) refuses such files
-even when they're force-added with `git add -f`.
-
-## Filing paperwork
-
-Name every PDF `Recipient_PosOrNeg_FormType_Reason.pdf`, e.g.
-
-```
-John Doe_Neg_F10_Uniform Violation.pdf
-Alex Brown_Neg_F174_Late to Formation.pdf
-```
-
+Name PDFs `Recipient_PosOrNeg_FormType_Reason.pdf`, e.g. `John Doe_Neg_F10_Uniform Violation.pdf`.
 Only **Pos/Neg** and the **Reason category** come from the filename. Everything else is read from
-the form itself: recipient, form type (worked out from what the pages look like), date, issuer,
-reason details, sanctions, and signatures.
+the form: recipient, form type (from what the pages look like), date, issuer, reason details,
+sanctions, and signatures.
 
-**Several recipients on one form:** open the form and type a comma-separated list into
-Recipient(s), e.g. `John Doe, Amy Wu, Carl Diaz`. On save, the browser asks for each person's
-class year in turn. Anyone whose year is already known from another form is filled in without
-asking. Each person then gets their own row in the sheet export.
+### How forms are read
 
-PDFs stay in `dump/` and are never moved or modified. The two blank templates (`F10_nuked_final.pdf`, `F174_nuked_final.pdf`) must
-stay there too: they are the reference every form is compared against.
+Field names differ between versions of these forms, so The Closet matches by **position and field
+type** against the blank templates built into the app:
 
-## How forms are read
-
-Field names differ between versions of these forms, so The Closet matches by **position and
-field type** instead:
-
-1. Each page is compared with the template pages. This picks the form type when the filename
-   doesn't say, and finds the form inside a PDF that has extra pages (an MFR, say).
+1. Each page is compared with the template pages. This picks the form type and finds the form
+   inside a PDF with extra pages (an MFR stapled in front, say).
 2. Fillable fields are matched to template boxes by position, size, and type. A field whose edges
-   are all within **10 pt** (≈10 px) of the template box counts as a sure match. The tolerance
-   is adjustable in Settings.
-3. Flattened forms are read from the text sitting inside each box.
-4. Scans are aligned to the template, then any ink the blank template doesn't have is detected.
-   That is how wet, drawn, or stamped signatures are found.
+   are all within **10 pt** of the template box is a sure match (adjustable in Settings).
+3. Flattened copies are read from the text sitting inside each box; printed labels are ignored.
+4. Scans are aligned to the template, and ink the blank template doesn't have shows which boxes and
+   signatures are filled.
 
-Routing is tracked as four steps: **SQ/CCF processed → Cadet SQ/CC signed → Recipient signed →
-AOC/AMT signed**. On an F10 these come from the SQ/CCF initials, Cadet Commander block, cadet
-signature, and AOC/AMT signature. On an F174, the counselee signature is the recipient. By
-default the Commander's block counts as the Cadet SQ/CC (Settings can change that). Any step can
-be set by hand from a form's page.
+Routing is tracked in four steps: **SQ/CCF processed → Cadet SQ/CC → Recipient → AOC/AMT**. Any
+step can be recorded by hand when someone signs later.
 
-## Review queue
+### The rules
 
-A form goes to **Review** when it can't be trusted as read: extra pages, missing fields, a
-flattened or scanned copy, a layout that doesn't match, or a filename off the naming pattern. Fix
-or fill in whatever is needed and choose **Save and mark reviewed**. The form won't come back to
-the queue.
+- **Names** never include rank (C1C–C4C, "Cadet", C/ grades), and "Last, First" becomes "First
+  Last". In the Recipient(s) box, commas separate people (a one-word piece is a surname), and each
+  person gets their own sheet row. The Closet asks for any class year it doesn't already know.
+- **Typos:** names within two letters of each other prompt a same-person check; the answer is
+  remembered in `metadata/names.json`.
+- **CDNA** and **Passes** aren't on the form. They're typed in, only apply to positive Form 10s, and
+  are required there: until both are entered the form sits in the **Incomplete** group of Review.
+- **Demerits, Tours, Confinements** come from Section VI of the F10. A blank, N/A, or None is 0,
+  except on scans, where they're left for you to type. AF 174s have none of these.
+- **Other** lists Loss of Pass and Revoke POV only when they say something.
+- **Reason details** are never shortened.
+- **Review** collects forms that can't be trusted as read: extra pages, missing fields, flattened
+  or scanned copies, a layout that doesn't match, or a filename without Pos/Neg.
+- **Archive** sets redundant paperwork aside: kept, but left out of every count and export.
 
-## Archive
+### Pasting into the tracker
 
-A form that's redundant (a duplicate, or one superseded by a corrected copy) can be set aside
-with **Archive** on its page or the archive button on its row in Paperwork. The PDF stays in `dump/` and its record and edits are kept, but it
-moves to the **Archive** section and no longer counts in the stats, charts, review queue, cadet
-totals, or sheet export. **Restore** brings it back.
+**Sheet export** lists rows in Conduct Log column order: Date, Class Year, Form Type, Reason
+Category, Reason Details, Month, Name, Issuer, Pos/Neg, CDNA, Passes, Demerits, Tours,
+Confinements, Other. Choose **Copy and mark as logged**, click the first empty Date cell, and paste.
 
 ## The metadata folder
 
-Everything The Closet learns is kept in `metadata/`:
-
 | Path | What it is |
 |---|---|
-| `forms/<id>.json` | One per PDF: the cached read, **your edits**, review/logged status, and history |
+| `forms/<id>.json` | One per PDF: the cached read, **your edits**, review/logged/archive status, history |
 | `renders/<id>/` | Page images for the app (safe to delete; rebuilt) |
 | `templates/` | Cached template geometry (safe to delete; rebuilt) |
+| `names.json` | Name spellings you confirmed |
 | `settings.json` | Tracker labels, month format, tolerance, and so on |
 
-To start over, choose **Settings → Clear metadata and rescan**. It erases the cached reads and
-all edits (settings are kept), then reads every PDF again. A PDF is otherwise only read again
-when its contents change. Renaming a PDF keeps its edits. Back up
-`metadata/forms/` along with `dump/`.
+**Settings → Clear metadata and rescan** starts over: it erases cached reads and edits (settings
+are kept) and reads every PDF again.
 
-## Pasting into the tracker
+## Development
 
-**Sheet export** lists rows in Conduct Log column order: Date, Class Year, Form Type, Reason
-Category, Reason Details, Month, Name, Issuer, Pos/Neg, CDNA, **Passes**, **Demerits**, Tours,
-Confinements, Other. Passes and Demerits go between CDNA and Tours, so add those columns to the
-sheet there.
+```
+npm install          # also patches a pdf.js performance bug (scripts/patch-pdfjs.mjs)
+npm start            # run the app
+npm test             # unit + engine tests on generated sample forms
+npm run test:e2e     # drive the real app window with Playwright
+npm run dist         # build installers for this system into dist/
+```
 
-- **Reason Category** comes from the Reason part of the filename. **Reason Details** is the full
-  narrative (F10) or the Reason for Counseling (F174), never shortened.
-- **CDNA** and **Passes** aren't on the form. Type them in on the form's page. They only apply to
-  positive Form 10s (blank for everything else), and every positive F10 needs both. Until they're
-  entered, the form sits in the **Incomplete** group of the Review list.
-- **Name** never includes rank: C1C, C2C, C3C, C4C, "Cadet", and C/ grades (C/Capt, C/2d Lt, and
-  so on) are stripped.
-- **Names are written first name first.** "Doe, John A" becomes John A Doe. In the Recipient(s)
-  box, commas separate people, but a one-word piece is read as a surname: `Doe, John, Amy Wu` is
-  John Doe and Amy Wu.
-- **Typos:** when two names are within two characters of each other (John A Doe / Jon A Doe), The
-  Closet asks whether they're the same person. If they are, it asks for the correct spelling and
-  uses it on every form. Each pair is asked about only once; answers are kept in
-  `metadata/names.json`.
-- **Demerits, Tours, Confinements** are read from Section VI of the F10. A blank box, N/A, or None
-  counts as 0. On a scanned copy they're left empty to type in, since a faint number can look
-  blank. The AF 174 has no such blocks, so those columns stay blank for it.
-- **Other** lists Loss of Pass and Revoke POV only when they actually say something. Blank, N/A,
-  NA, and None leave it empty.
+`npm run samples -- <folder>` writes realistic sample paperwork with made-up names: fillable,
+recreated with shifted fields, flattened, scanned, with an extra page, and badly named. Never point
+it at a real dump folder.
 
-Choose
-**Copy and mark as logged**, click the first empty Date cell in the Conduct Log, and paste. Each
-form's page also has its own copy button. If your sheet's dropdowns use different wording
-(e.g. `Negative` instead of `Neg`), set the labels in Settings.
+Installers for every platform are built by GitHub Actions (`.github/workflows/build.yml`): run it
+from the Actions tab, or push a `v*` tag to publish a release.
 
-## Testing
+### Layout
 
-`python tools/make_samples.py <some other folder>` writes a set of realistic test forms: filled,
-recreated with shifted fields, flattened, scanned, with an extra page, and badly named. Point the
-app at that folder with `CLOSET_DUMP=<folder> CLOSET_METADATA=<folder2> python run.py`.
-Never aim it at the real dump.
+| Path | |
+|---|---|
+| `src/main/` | Electron main process: window, `closet://` scheme, IPC routes, preload bridge |
+| `src/core/` | The engine: PDF analysis (pdf.js), records and sheet rows, the metadata store, parser threads |
+| `src/renderer/` | The app UI |
+| `resources/` | Blank templates and icons |
+| `test/` | Tests; `tools/` sample generator; `site/` landing-page images |
+
+### Privacy and git
+
+Paperwork is personal information. `.gitignore` keeps `dump/`, `metadata/`, the tracker export,
+and every PDF except the two blank templates out of git. A pre-commit hook (`.githooks/`, enable
+with `git config core.hooksPath .githooks`) refuses them even when force-added.
+
+Built with Electron, pdf.js (Apache-2.0), pdf-lib, and @napi-rs/canvas (MIT). Archivo font (SIL OFL).

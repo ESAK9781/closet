@@ -1,0 +1,128 @@
+{
+  "name": "the-closet",
+  "productName": "The Closet",
+  "version": "2.0.0",
+  "description": "Paperwork tracker for AFCW Form 10s and AF Form 174s",
+  "author": {
+    "name": "Elijah Sakamoto",
+    "email": "esak.code.projects@gmail.com"
+  },
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "postinstall": "node scripts/patch-pdfjs.mjs",
+    "start": "electron .",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node --test test/e2e/*.test.mjs",
+    "samples": "node tools/make-samples.mjs",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "@fontsource-variable/archivo": "^5.2.5",
+    "@napi-rs/canvas": "^1.0.9",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.3.289"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.0.12",
+    "playwright-core": "^1.58.0"
+  },
+  "homepage": "https://github.com/ESAK9781/the-closet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ESAK9781/the-closet.git"
+  },
+  "build": {
+    "appId": "com.esak.thecloset",
+    "productName": "The Closet",
+    "copyright": "Copyright © 2026 Elijah Sakamoto",
+    "asar": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "src/**/*",
+      "resources/**/*",
+      "LICENSE",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraMetadata": {
+      "main": "src/main/main.js"
+    },
+    "icon": "resources/icon.png",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "The Closet",
+      "deleteAppDataOnUninstall": false,
+      "license": "LICENSE",
+      "artifactName": "The-Closet-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "The-Closet-portable.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg"
+        },
+        {
+          "target": "zip"
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "The-Closet-mac-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage"
+        },
+        {
+          "target": "deb"
+        }
+      ],
+      "category": "Office",
+      "synopsis": "Paperwork tracker for AFCW Form 10s and AF Form 174s",
+      "artifactName": "The-Closet-linux-${arch}.${ext}"
+    },
+    "publish": null,
+    "dmg": {
+      "artifactName": "The-Closet-mac-${arch}.${ext}"
+    },
+    "appImage": {
+      "artifactName": "The-Closet-linux-x86_64.${ext}"
+    },
+    "deb": {
+      "artifactName": "The-Closet-linux-amd64.${ext}"
+    }
+  }
+}
