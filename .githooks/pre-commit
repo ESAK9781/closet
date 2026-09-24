@@ -1,0 +1,16 @@
+#!/bin/sh
+# Refuse to commit paperwork. Only the two blank templates may live in git, even if someone
+# uses `git add -f`. Installed by the installer via: git config core.hooksPath .githooks
+bad=$(git diff --cached --name-only --diff-filter=ACMR | while IFS= read -r f; do
+  case "$f" in
+    dump/F10_nuked_final.pdf|dump/F174_nuked_final.pdf) ;;
+    dump/*|metadata/*|*.pdf|*.PDF|"CS07 Discipline Tracker_google_sheet_format/"*) echo "  $f" ;;
+  esac
+done)
+if [ -n "$bad" ]; then
+  echo "The Closet: refusing to commit personal paperwork / metadata:" >&2
+  echo "$bad" >&2
+  echo "Unstage them with: git restore --staged <file>" >&2
+  exit 1
+fi
+exit 0
