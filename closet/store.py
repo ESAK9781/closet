@@ -89,6 +89,8 @@ class Store:
         self.generation = 0  # bumps on reset; stale parses from before a reset are dropped
         self._wake = threading.Event()
         self.settings = self._load_settings()
+        self.names_path = self.meta / "names.json"
+        self.names = self._load_names()
         self._load_all()
         self._load_templates()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -123,6 +125,61 @@ class Store:
             _write_json(self.meta / "settings.json", self.settings)
             self.version += 1
             return self.settings
+
+    # ------------------------------------------------------------------ name spellings
+    def _load_names(self) -> dict:
+        data = {"aliases": {}, "distinct": []}
+        if self.names_path.exists():
+            try:
+                data.update(json.loads(self.names_path.read_text("utf-8")))
+            except Exception:
+                pass
+        records.ALIASES.clear()
+        records.ALIASES.update(data["aliases"])
+        return data
+
+    def name_pairs(self, forms: list[dict]) -> list[dict]:
+        """Different names within two characters of each other that the user hasn't ruled on."""
+        counts: dict[str, int] = {}
+        for f in forms:
+            if f["missing"] or not f["parsed"]:
+                continue
+            for n in f["record"].get("recipient_list") or []:
+                counts[n] = counts.get(n, 0) + 1
+        distinct = {tuple(sorted(x)) for x in self.names.get("distinct", [])}
+        names = sorted(counts)
+        pairs = []
+        for i, a in enumerate(names):
+            la = a.lower()
+            if len(la) < 4:
+                continue
+            for b in names[i + 1:]:
+                lb = b.lower()
+                if la == lb or len(lb) < 4 or tuple(sorted((la, lb))) in distinct:
+                    continue
+                if records.levenshtein(la, lb, 2) <= 2:
+                    pairs.append({"a": a, "b": b, "a_forms": counts[a], "b_forms": counts[b]})
+        return pairs
+
+    def resolve_names(self, a: str, b: str, same: bool, correct: str = "") -> None:
+        with self.lock:
+            la, lb = records.collapse(a).lower(), records.collapse(b).lower()
+            if same:
+                correct = records.collapse(correct) or a
+                aliases = self.names["aliases"]
+                for old in list(aliases):  # anything that pointed at either spelling follows along
+                    if aliases[old].lower() in (la, lb):
+                        aliases[old] = correct
+                for n in (la, lb):
+                    if n != correct.lower():
+                        aliases[n] = correct
+                aliases.pop(correct.lower(), None)
+            else:
+                self.names["distinct"].append(sorted((la, lb)))
+            _write_json(self.names_path, self.names)
+            records.ALIASES.clear()
+            records.ALIASES.update(self.names["aliases"])
+            self.version += 1
 
     # ------------------------------------------------------------------ templates
     def template_names(self) -> set[str]:
@@ -220,6 +277,8 @@ class Store:
             for d in (self.forms_dir, self.renders_dir, self.tmpl_dir):
                 shutil.rmtree(d, ignore_errors=True)
                 d.mkdir(parents=True, exist_ok=True)
+            self.names_path.unlink(missing_ok=True)
+            self.names = self._load_names()
             self.status.update(state="idle", done=0, total=0, current=None)
             self._load_templates()
             self.version += 1
@@ -437,6 +496,7 @@ class Store:
                 "settings": self.settings,
                 "columns": records.SHEET_COLUMNS,
                 "roster": roster,
+                "name_pairs": self.name_pairs(forms),
                 "forms": forms,
                 "dump_dir": str(self.dump.resolve()),
                 "meta_dir": str(self.meta.resolve()),
@@ -457,6 +517,8 @@ class Store:
             "page_count": a.get("page_count"),
             "issues": issues,
             "needs_review": needs_review and not m.get("reviewed") and not m.get("archived"),
+            # a positive F10 without CDNA/Passes stays on the incomplete list until they're entered
+            "incomplete": (records.missing_manual(rec) if rec and not m.get("archived") and not m.get("missing") else []),
             "archived": bool(m.get("archived")),
             "archived_at": m.get("archived_at"),
             "flagged": needs_review,

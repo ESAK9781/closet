@@ -18,6 +18,7 @@ const REC_FIELDS = [
   ["issuer", "Issuer", "", ""],
   ["reason_details", "Reason details", "wide textarea", ""],
   ["cdna", "CDNA", "", "Not on the form; type it in"],
+  ["passes", "Passes", "", "Not on the form; type it in"],
   ["demerits", "Demerits", "", "Blank on the form = 0"],
   ["tours", "Tours", "", "Blank on the form = 0"],
   ["confinements", "Confinements", "", "Blank on the form = 0"],
@@ -79,9 +80,23 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const plural = (n, w, p) => `${n} ${n === 1 ? w : (p || w + "s")}`;
 const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
-const cdnaApplies = (ft, pn) => ft === "F10" && pn === "Pos"; // CDNA: typed by hand, positive F10s only
+const cdnaApplies = (ft, pn) => ft === "F10" && pn === "Pos"; // CDNA + Passes: typed by hand, positive F10s only
+// Ranks aren't part of a name (mirrors records.strip_rank on the server)
+const stripRank = (n) => {
+  const out = [];
+  let skip = false;
+  for (const tok of String(n || "").trim().split(/\s+/)) {
+    const bare = tok.replace(/^[,.]+|[,.]+$/g, "");
+    if (skip && /^(lt|col|gen|sgt|capt|maj)$/i.test(bare)) { skip = false; continue; }
+    skip = false;
+    if (/^(c[1-4]c|cadet)$/i.test(bare)) continue;
+    if (/^c\//i.test(bare)) { skip = true; continue; }
+    out.push(tok);
+  }
+  return out.join(" ").replace(/^[\s,]+|[\s,]+$/g, "");
+};
 const colIdx = (name) => (S.data?.columns || []).indexOf(name);
-const nameKey = (n) => n.toLowerCase().split(/[^a-z]+/).filter((t) => t.length > 1).sort().join(" ");
+const nameKey = (n) => stripRank(n).toLowerCase().split(/[^a-z]+/).filter((t) => t.length > 1).sort().join(" ");
 
 async function api(path, opts = {}) {
   const o = { ...opts };
@@ -133,6 +148,8 @@ function fmtStamp(s) {
 // Archived forms keep their file and metadata but drop out of every count, chart, queue and export.
 const active = () => (S.data?.forms || []).filter((f) => !f.missing && !f.archived);
 const archived = () => (S.data?.forms || []).filter((f) => f.archived);
+const isIncomplete = (f) => (f.incomplete || []).length > 0;
+const inQueue = (f) => f.needs_review || isIncomplete(f);
 const parsed = () => active().filter((f) => f.parsed);
 
 function flagState(rec, key) {
@@ -181,7 +198,49 @@ async function load() {
   if (editing) S.stale = true;
   else renderView();
   if (S.detail && S.host === "drawer" && !isDirty()) openForm(S.detail.id, { keepPage: true, silent: true });
+  checkNamePairs();
 }
+
+// Two recipient names within two characters of each other are probably one cadet with a typo.
+// Ask once per pair; the answer is saved, so the same pair never comes up again.
+let namesBusy = false;
+const namesSkipped = new Set();
+async function checkNamePairs() {
+  if (namesBusy || document.visibilityState !== "visible") return;
+  const pairs = (S.data?.name_pairs || []).filter((x) => !namesSkipped.has(x.a + "|" + x.b));
+  if (!pairs.length) return;
+  namesBusy = true;
+  let changed = false;
+  try {
+    for (const { a, b, a_forms, b_forms } of pairs) {
+      const same = confirm(`Possible typo: are these the same person?
+
+    ${a}  (${plural(a_forms, "form")})
+    ${b}  (${plural(b_forms, "form")})
+
+OK = same person, one spelling is a typo
+Cancel = two different people`);
+      if (same) {
+        const guess = a_forms !== b_forms ? (a_forms > b_forms ? a : b) : (a.length >= b.length ? a : b);
+        const correct = prompt(`What's the correct spelling? It will be used on every form for this cadet.`, guess);
+        if (correct === null || !correct.trim()) { namesSkipped.add(a + "|" + b); continue; }
+        await api("/api/names/resolve", { method: "POST", body: { a, b, same: true, correct: correct.trim() } });
+        toast(`Using “${correct.trim()}” for both spellings`);
+      } else {
+        await api("/api/names/resolve", { method: "POST", body: { a, b, same: false } });
+      }
+      changed = true;
+      // one decision can settle others (e.g. three spellings of one name), so re-check from fresh data
+      break;
+    }
+  } catch (e) {
+    toast("Couldn't save the name decision: " + e.message, true);
+  } finally {
+    namesBusy = false;
+  }
+  if (changed) await load();
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkNamePairs(); });
 
 let polling = false;
 let misses = 0;
@@ -216,7 +275,7 @@ document.addEventListener("focusout", () => setTimeout(() => {
 
 // ------------------------------------------------------------------ chrome
 function renderNav() {
-  const review = active().filter((f) => f.needs_review).length;
+  const review = active().filter(inQueue).length;
   const unlogged = parsed().filter((f) => !f.logged).length;
   const items = [
     ["overview", "Overview", ""],
@@ -281,7 +340,7 @@ function viewOverview() {
   const neg = forms.filter((f) => f.record.pos_neg === "Neg").length;
   const pos = forms.filter((f) => f.record.pos_neg === "Pos").length;
   const waiting = forms.filter(awaiting);
-  const review = all.filter((f) => f.needs_review).length;
+  const review = all.filter(inQueue).length;
   const unlogged = forms.filter((f) => !f.logged);
   const rows = forms.flatMap((f) => f.rows);
   const tours = rows.reduce((a, r) => a + num(r[colIdx("Tours")]), 0);
@@ -301,7 +360,7 @@ function viewOverview() {
       <a class="kpi" href="#/paperwork"><div class="v">${forms.length}</div><div class="l">${neg} negative, ${pos} positive</div>
         <div class="split" aria-hidden="true"><span style="width:${(neg / tot) * 100}%;background:var(--neg)"></span><span style="width:${(pos / tot) * 100}%;background:var(--pos)"></span></div></a>
       <a class="kpi accent" href="#/paperwork" data-status="awaiting"><div class="v">${waiting.length}</div><div class="l">Awaiting a signature</div></a>
-      <a class="kpi" href="#/review"><div class="v" style="${review ? "color:var(--crit)" : ""}">${review}</div><div class="l">Need your review</div></a>
+      <a class="kpi" href="#/review"><div class="v" style="${review ? "color:var(--crit)" : ""}">${review}</div><div class="l">Need review or are incomplete</div></a>
       <a class="kpi" href="#/export"><div class="v">${unlogged.length}</div><div class="l">Not in the tracker yet</div></a>
       <div class="kpi"><div class="v">${tours}</div><div class="l">Tours issued, plus ${conf} confinements and ${dem} demerits</div></div>
     </section>
@@ -443,7 +502,7 @@ function viewPaperwork() {
       ${seg("type", [["all", "All forms"], ["F10", "F10"], ["F174", "F174"]])}
       ${seg("pn", [["all", "Both"], ["Neg", "Negative"], ["Pos", "Positive"]])}
       <select class="select" id="status" style="width:auto" aria-label="Status filter">
-        ${[["all", "Any status"], ["awaiting", "Awaiting a signature"], ["complete", "Fully routed"], ["review", "Needs review"], ["unlogged", "Not in the tracker"], ["logged", "In the tracker"]]
+        ${[["all", "Any status"], ["awaiting", "Awaiting a signature"], ["complete", "Fully routed"], ["review", "Needs review"], ["incomplete", "Missing CDNA/Passes"], ["unlogged", "Not in the tracker"], ["logged", "In the tracker"]]
           .map(([v, l]) => `<option value="${v}" ${S.f.status === v ? "selected" : ""}>${l}</option>`).join("")}
       </select>
       <span class="spacer"></span><span id="countLbl" style="color:var(--muted);font-size:13px"></span>
@@ -470,6 +529,7 @@ function filteredForms() {
     if (st === "awaiting" && !awaiting(f)) return false;
     if (st === "complete" && (!f.parsed || awaiting(f))) return false;
     if (st === "review" && !f.needs_review) return false;
+    if (st === "incomplete" && !isIncomplete(f)) return false;
     if (st === "unlogged" && (f.logged || !f.parsed)) return false;
     if (st === "logged" && !f.logged) return false;
     if (q) {
@@ -494,13 +554,14 @@ function renderPaperRows() {
     return;
   }
   $("#results").innerHTML = `<div class="table-wrap"><table class="t"><thead><tr>
-    ${th("date", "Date")}${th("who", "Recipient")}${th("type", "Form")}<th>Pos/Neg</th>${th("issuer", "Issuer")}<th>Routing</th><th>Status</th></tr></thead><tbody>
+    ${th("date", "Date")}${th("who", "Recipient")}${th("type", "Form")}<th>Pos/Neg</th>${th("issuer", "Issuer")}<th>Routing</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
     ${list.map((f) => {
       const r = f.record || {};
       let status = [];
       if (f.missing) status.push('<span class="chip crit">File missing</span>');
       if (!f.parsed) status.push('<span class="chip muted">Reading…</span>');
       if (f.needs_review) status.push('<span class="chip crit">Needs review</span>');
+      if (isIncomplete(f)) status.push(`<span class="chip warn" title="Positive F10 missing ${esc(f.incomplete.join(" and "))}">Incomplete</span>`);
       if (f.logged) status.push(`<span class="logged" title="Logged ${esc(fmtStamp(f.logged_at))}">${icon("check")}In tracker</span>`);
       return `<tr class="click" data-open="${f.id}" tabindex="0">
         <td class="nowrap">${f.parsed ? fmtDate(r.date_iso, r.date) : ""}</td>
@@ -509,11 +570,19 @@ function renderPaperRows() {
         <td>${f.parsed ? pnChip(r.pos_neg) : ""}</td>
         <td><div class="sub" style="color:var(--text-2)">${esc(r.issuer || "")}</div></td>
         <td>${f.parsed ? routeMini(r) : ""}</td>
-        <td><div class="status-cell">${status.join("")}</div></td></tr>`;
+        <td><div class="status-cell">${status.join("")}</div></td>
+        <td class="nowrap" style="text-align:right"><button class="icon-btn" type="button" data-archive="${f.id}" title="Archive: keep the file and record, leave it out of stats and exports" aria-label="Archive ${esc(f.filename)}">${icon("archive")}</button></td></tr>`;
     }).join("")}</tbody></table></div>`;
   $$("[data-sort]").forEach((t) => (t.onclick = () => {
     S.sort = { key: t.dataset.sort, dir: S.sort.key === t.dataset.sort ? -S.sort.dir : t.dataset.sort === "date" ? -1 : 1 };
     renderPaperRows();
+  }));
+  $$("[data-archive]").forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation();
+    const f = (S.data.forms || []).find((x) => x.id === b.dataset.archive);
+    await api(`/api/forms/${b.dataset.archive}`, { method: "PATCH", body: { archived: true } });
+    toast(`Archived ${f ? (f.record.recipient_list || [])[0] || f.filename : "form"}. Restore it from Archive.`);
+    await load();
   }));
   bindOpenRows($("#results"));
 }
@@ -630,7 +699,8 @@ function sheetPane(d) {
 }
 
 function issuesBlock(d) {
-  const list = d.issues || [];
+  const list = [...(d.issues || [])];
+  if (isIncomplete(d)) list.unshift({ level: "warn", text: `Positive F10: enter ${d.incomplete.join(" and ")} (not on the form). Until then it stays on the incomplete list.` });
   if (!list.length) return d.parsed ? `<div class="issues"><div class="issue ok">${icon("check")}<span>Matches the ${esc(d.record.form_type)} template. Every field was found where it belongs.</span></div></div>` : "";
   return `<div class="issues">${list.map((i) => `<div class="issue ${i.level}">${icon(i.level === "review" ? "alert" : "info")}<span>${esc(i.text)}</span></div>`).join("")}</div>`;
 }
@@ -659,7 +729,7 @@ function recordTab(d) {
   const ft = currentValue("form_type");
   const pn = currentValue("pos_neg");
   const fields = REC_FIELDS.filter(([k]) => {
-    if (k === "cdna") return cdnaApplies(ft, pn);
+    if (k === "cdna" || k === "passes") return cdnaApplies(ft, pn);
     if (["demerits", "tours", "confinements"].includes(k)) return ft !== "F174"; // the 174 has no sanctions
     return true;
   }).map(([k, label, kind, hint]) => {
@@ -667,7 +737,7 @@ function recordTab(d) {
     const auto = r.auto[k] ?? "";
     const overridden = k in S.edit.overrides ? S.edit.overrides[k] !== null : r.overridden.includes(k);
     const changed = k in S.edit.overrides;
-    const missing = !String(val).trim() && ["recipients", "date", "pos_neg", "form_type", "reason_category", "cdna"].includes(k);
+    const missing = !String(val).trim() && ["recipients", "date", "pos_neg", "form_type", "reason_category", "cdna", "passes"].includes(k);
     const cls = `field ${kind.includes("wide") ? "wide" : ""} ${changed ? "changed" : ""} ${missing ? "missing" : ""}`;
     let input;
     if (kind.startsWith("select:")) {
@@ -760,10 +830,14 @@ function detailInner(d) {
 function saveBar() {
   const dirty = isDirty();
   if (S.host === "review") {
-    return `<div class="review-actions"><span class="note ${dirty ? "dirty" : ""}">${dirty ? "Unsaved changes" : "Check the guesses, fill in what's missing, then save. This form won't come back to the queue."}</span>
+    const hint = S.detail.needs_review ? "Check the guesses, fill in what's missing, then save. This form won't come back to the queue."
+      : isIncomplete(S.detail) ? `Enter ${S.detail.incomplete.join(" and ")} to take this form off the list.` : "";
+    return `<div class="review-actions"><span class="note ${dirty ? "dirty" : ""}">${dirty ? "Unsaved changes" : hint}</span>
       ${dirty ? '<button class="btn ghost" type="button" data-act="discard">Discard</button>' : ""}
-      <button class="btn" type="button" data-act="save" ${dirty ? "" : "disabled"}>Save</button>
-      <button class="btn primary" type="button" data-act="savereview">${icon("check")}${S.detail.reviewed ? "Save" : "Save and mark reviewed"}</button></div>`;
+      ${S.detail.needs_review
+        ? `<button class="btn" type="button" data-act="save" ${dirty ? "" : "disabled"}>Save</button>
+           <button class="btn primary" type="button" data-act="savereview">${icon("check")}Save and mark reviewed</button>`
+        : `<button class="btn primary" type="button" data-act="save" ${dirty ? "" : "disabled"}>${icon("check")}Save</button>`}</div>`;
   }
   return `<div class="d-foot"><span class="note ${dirty ? "dirty" : ""}">${dirty ? "Unsaved changes" : ""}</span>
     ${dirty ? '<button class="btn ghost" type="button" data-act="discard">Discard</button>' : ""}
@@ -929,7 +1003,16 @@ async function act(a) {
   }
 }
 
-const splitNames = (s) => String(s || "").split(/[,;\n]/).map((x) => x.trim().replace(/\s+/g, " ")).filter(Boolean);
+// Commas separate people, but a one-word piece is a surname written "Last, First" (mirrors records.split_names)
+const splitNames = (s) => {
+  const chunks = String(s || "").split(/[,;\n]/).map((x) => stripRank(x.trim().replace(/\s+/g, " "))).filter(Boolean);
+  const out = [];
+  for (let i = 0; i < chunks.length; i++) {
+    if (!chunks[i].includes(" ") && i + 1 < chunks.length) { out.push(`${chunks[i + 1]} ${chunks[i]}`); i++; }
+    else out.push(chunks[i]);
+  }
+  return out;
+};
 const normYear = (t) => { t = String(t || "").trim().replace(/^['’]|^c/i, ""); return /^\d{2}$/.test(t) ? "20" + t : /^20\d{2}$/.test(t) ? t : null; };
 
 // A comma-separated recipient list means several people got this paperwork. Each needs a class
@@ -990,8 +1073,9 @@ async function save(markReviewed) {
   toast(markReviewed ? "Saved and marked reviewed" : "Changes saved");
   const host = S.host;
   await load();
-  if (host === "review" && markReviewed) {
-    const next = active().find((f) => f.needs_review && f.id !== d.id);
+  const still = active().find((f) => f.id === d.id);
+  if (host === "review" && (markReviewed || (still && !inQueue(still)))) {
+    const next = active().find((f) => inQueue(f) && f.id !== d.id);
     S.reviewId = next ? next.id : d.id;
     renderView();
   } else if (S.detail) {
@@ -1002,21 +1086,26 @@ async function save(markReviewed) {
 // ------------------------------------------------------------------ review
 function viewReview() {
   const all = active();
-  const queue = all.filter((f) => f.needs_review);
-  const done = all.filter((f) => f.flagged && f.reviewed);
+  const waiting = all.filter((f) => f.needs_review);
+  const incomplete = all.filter((f) => !f.needs_review && isIncomplete(f));
+  const queue = [...waiting, ...incomplete];
+  const done = all.filter((f) => f.flagged && f.reviewed && !isIncomplete(f));
   if (!queue.length && !done.length) {
-    $("#main").innerHTML = head("Review", "Forms that don't match their template closely enough to trust. Check the guesses and fill in the gaps once; they won't come back.") + `
-      <div class="panel"><div class="empty">${icon("inbox0")}<h3>Nothing to review</h3><p>Every form in the dump folder matched its template. Anything with extra pages, missing fields, a scan, or an off-pattern filename will show up here.</p></div></div>`;
+    $("#main").innerHTML = head("Review", "Forms that don't match their template closely enough to trust, and positive F10s still missing CDNA or Passes.") + `
+      <div class="panel"><div class="empty">${icon("inbox0")}<h3>Nothing to review</h3><p>Every form matched its template and every positive F10 has CDNA and Passes. Anything with extra pages, missing fields, a scan, a filename without Pos/Neg, or missing CDNA/Passes will show up here.</p></div></div>`;
     closeDetail();
     return;
   }
   if (!S.reviewId || !all.some((f) => f.id === S.reviewId)) S.reviewId = (queue[0] || done[0]).id;
   const item = (f) => `<button type="button" data-rid="${f.id}" aria-current="${f.id === S.reviewId}">
       <div class="t">${whoLine(f.record || {}, f.filename)}</div><div class="s">${esc(f.filename)}</div>
-      ${f.needs_review ? `<div class="why">${esc((f.issues.find((i) => i.level === "review") || {}).text || "")}</div>` : `<div class="s" style="color:var(--good)">Reviewed ${esc(fmtStamp(f.reviewed_at))}</div>`}</button>`;
+      ${f.needs_review ? `<div class="why">${esc((f.issues.find((i) => i.level === "review") || {}).text || "")}</div>`
+        : isIncomplete(f) ? `<div class="why" style="color:#ebc673">Positive F10 missing ${esc(f.incomplete.join(" and "))}</div>`
+        : `<div class="s" style="color:var(--good)">Reviewed ${esc(fmtStamp(f.reviewed_at))}</div>`}</button>`;
   $("#main").innerHTML = head("Review", `${queue.length ? plural(queue.length, "form needs", "forms need") + " a look." : "The queue is clear."} Your corrections are saved with the form, and a reviewed form doesn't come back to the queue.`) + `
     <div class="review-layout"><nav class="queue" aria-label="Review queue">
-      ${queue.length ? `<div class="group">Waiting (${queue.length})</div>${queue.map(item).join("")}` : ""}
+      ${waiting.length ? `<div class="group">Needs review (${waiting.length})</div>${waiting.map(item).join("")}` : ""}
+      ${incomplete.length ? `<div class="group">Incomplete (${incomplete.length})</div>${incomplete.map(item).join("")}` : ""}
       ${done.length ? `<div class="group">Reviewed (${done.length})</div>${done.map(item).join("")}` : ""}
     </nav><div id="reviewPane"><div class="review-card"><div class="empty">Loading…</div></div></div></div>`;
   $$("[data-rid]").forEach((b) => (b.onclick = () => {
@@ -1128,7 +1217,8 @@ function renderExportRows() {
       ${r.map((c) => `<td class="${c ? "" : "blank"}" title="${esc(c)}">${esc(c)}</td>`).join("")}
       <td class="nowrap">${i === 0 ? `<button class="icon-btn" type="button" data-copyone="${f.id}" title="Copy this form's rows" aria-label="Copy rows">${icon("copy")}</button><button class="icon-btn" type="button" data-openx="${f.id}" title="Open form" aria-label="Open form">${icon("chev")}</button>` : ""}</td></tr>`).join("")).join("")}
     </tbody></table></div>
-    <div class="copybar"><span class="txt"><b>${plural(nRows, "row")}</b> from ${plural(picked.length, "form")} selected</span>
+    <div class="copybar"><span class="txt"><b>${plural(nRows, "row")}</b> from ${plural(picked.length, "form")} selected${picked.some(isIncomplete)
+      ? `<br><span style="color:#ebc673;font-size:12.5px">${plural(picked.filter(isIncomplete).length, "positive F10 is", "positive F10s are")} missing CDNA or Passes</span>` : ""}</span>
       <label><input class="chk" type="checkbox" id="hdr" ${S.data.settings.include_header ? "checked" : ""}> Include header row</label>
       <button class="btn" type="button" id="copySel" ${nRows ? "" : "disabled"}>${icon("copy")}Copy rows</button>
       <button class="btn primary" type="button" id="copyLog" ${nRows ? "" : "disabled"}>Copy and mark as logged</button></div>`;

@@ -81,7 +81,7 @@ the queue.
 ## Archive
 
 A form that's redundant (a duplicate, or one superseded by a corrected copy) can be set aside
-with **Archive** on its page. The PDF stays in `dump/` and its record and edits are kept, but it
+with **Archive** on its page or the archive button on its row in Paperwork. The PDF stays in `dump/` and its record and edits are kept, but it
 moves to the **Archive** section and no longer counts in the stats, charts, review queue, cadet
 totals, or sheet export. **Restore** brings it back.
 
@@ -104,13 +104,24 @@ when its contents change. Renaming a PDF keeps its edits. Back up
 ## Pasting into the tracker
 
 **Sheet export** lists rows in Conduct Log column order: Date, Class Year, Form Type, Reason
-Category, Reason Details, Month, Name, Issuer, Pos/Neg, CDNA, **Demerits**, Tours, Confinements,
-Other. The Demerits column goes between CDNA and Tours, so add it to the sheet there.
+Category, Reason Details, Month, Name, Issuer, Pos/Neg, CDNA, **Passes**, **Demerits**, Tours,
+Confinements, Other. Passes and Demerits go between CDNA and Tours, so add those columns to the
+sheet there.
 
 - **Reason Category** comes from the Reason part of the filename. **Reason Details** is the full
   narrative (F10) or the Reason for Counseling (F174), never shortened.
-- **CDNA** isn't on the form. Type it in on the form's page. It only applies to positive Form 10s
-  and is blank for everything else.
+- **CDNA** and **Passes** aren't on the form. Type them in on the form's page. They only apply to
+  positive Form 10s (blank for everything else), and every positive F10 needs both. Until they're
+  entered, the form sits in the **Incomplete** group of the Review list.
+- **Name** never includes rank: C1C, C2C, C3C, C4C, "Cadet", and C/ grades (C/Capt, C/2d Lt, and
+  so on) are stripped.
+- **Names are written first name first.** "Doe, John A" becomes John A Doe. In the Recipient(s)
+  box, commas separate people, but a one-word piece is read as a surname: `Doe, John, Amy Wu` is
+  John Doe and Amy Wu.
+- **Typos:** when two names are within two characters of each other (John A Doe / Jon A Doe), The
+  Closet asks whether they're the same person. If they are, it asks for the correct spelling and
+  uses it on every form. Each pair is asked about only once; answers are kept in
+  `metadata/names.json`.
 - **Demerits, Tours, Confinements** are read from Section VI of the F10. A blank box, N/A, or None
   counts as 0. On a scanned copy they're left empty to type in, since a faint number can look
   blank. The AF 174 has no such blocks, so those columns stay blank for it.

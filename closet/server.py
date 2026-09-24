@@ -74,6 +74,15 @@ def reset(body: dict = Body(...)):
     return {**store.reset(), "version": store.version}
 
 
+@app.post("/api/names/resolve")
+def resolve_names(body: dict = Body(...)):
+    """Two similar spellings: the same person (with the correct spelling) or two people."""
+    if not body.get("a") or not body.get("b"):
+        raise HTTPException(400, "Need both names")
+    store.resolve_names(body["a"], body["b"], bool(body.get("same")), body.get("correct", ""))
+    return {"version": store.version}
+
+
 @app.get("/api/forms/{fid}")
 def form(fid: str):
     d = store.detail(fid)

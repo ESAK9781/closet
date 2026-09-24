@@ -132,7 +132,7 @@ def make(out: Path):
             if w.field_name == "Loss of Pass Priv":
                 val = "N/A"
             if w.field_name == "Recieving Cadet Name":
-                val = "Smith, Jane"
+                val = "C2C Smith, Jane"
             if w.field_name == "Conduct Narrative":
                 val = "Led the squadron's food drive, collecting 1,200 lbs of donations for the local shelter."
             if w.field_type == pymupdf.PDF_WIDGET_TYPE_CHECKBOX:
@@ -190,7 +190,7 @@ def make(out: Path):
 
     # 6. F174 positive, counselee signed via ink annotation, commander signed too
     d = pymupdf.open(f174)
-    fill(d, {"Recieving Name": "Patel, Riya", "Recieving Grade": "C2C", "Recieving Unit/Office Symbol": "CS-07",
+    fill(d, {"Recieving Name": "Cadet Patel, Riya", "Recieving Grade": "C2C", "Recieving Unit/Office Symbol": "CS-07",
              "Reason for Counseling": "Outstanding performance as element leader",
              "Couseling Summary": "Recognized for leading element to top inspection scores.",
              "Name Grade and Duty Title of Counselor": "C/MSgt Ortiz, First Sergeant",
@@ -209,7 +209,15 @@ def make(out: Path):
              "Conduct Narrative": "Missed accountability formation."})
     d.save(out / "Lee, Kevin_Neg_F10_Missed Formation.pdf")
 
-    # 8. Badly named file
+    # 8. Same cadet as #1 with a one-letter typo ("Jon" vs "John") -> the app asks if they're the same
+    d = pymupdf.open(f174)
+    fill(d, {"Recieving Name": "C4C Doe, Jon A", "Reason for Counseling": "Follow-up on uniform standards",
+             "Couseling Summary": "Reviewed uniform standards after the 11 Sep report.",
+             "Name Grade and Duty Title of Counselor": "C/SSgt Park, Flight Sergeant",
+             "Couseling Date_af_date": "2026-09-16"})
+    d.save(out / "Jon Doe_Neg_F174_Uniform Follow-up.pdf")
+
+    # 9. Badly named file
     d = pymupdf.open(f10)
     fill(d, {"Recieving Cadet Name": "Kim, Daniel", "Date": "21 Sep 26", "Conduct Narrative": "Unsecured room."})
     d.save(out / "scan0042.pdf")

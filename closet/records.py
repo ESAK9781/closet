@@ -10,11 +10,15 @@ from dateutil import parser as dparser
 from .templates import FLAG_DEFS, FORM_TYPES, flag_slots
 
 SHEET_COLUMNS = ["Date", "Class Year", "Form Type", "Reason Category", "Reason Details", "Month",
-                 "Name", "Issuer", "Pos/Neg", "CDNA", "Demerits", "Tours", "Confinements", "Other"]
+                 "Name", "Issuer", "Pos/Neg", "CDNA", "Passes", "Demerits", "Tours", "Confinements", "Other"]
 
 # Record fields the user can edit (in addition to the four flags)
 RECORD_FIELDS = ["recipients", "form_type", "pos_neg", "date", "class_year", "squadron",
-                 "reason_category", "reason_details", "issuer", "cdna", "demerits", "tours", "confinements", "other"]
+                 "reason_category", "reason_details", "issuer", "cdna", "passes", "demerits", "tours",
+                 "confinements", "other"]
+
+# Typed in by hand, and only for positive Form 10s -- where they're required.
+MANUAL_POS_F10 = ["cdna", "passes"]
 
 # Section VI counts on the F10. Blank means none given (0); the F174 has no such blocks.
 SANCTION_FIELDS = ["demerits", "tours", "confinements"]
@@ -73,14 +77,72 @@ def collapse(s) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip()
 
 
+_RANK = re.compile(r"(?i)^(c[1-4]c|cadet)$")
+_RANK_AFTER_C = re.compile(r"(?i)^(lt|col|gen|sgt|capt|maj)$")
+
+
+def strip_rank(name: str) -> str:
+    """Ranks aren't part of a name: drop C1C-C4C, 'Cadet', and C/ grades (C/Capt, C/2d Lt, ...)."""
+    out, skip_next = [], False
+    for tok in collapse(name).split(" "):
+        bare = tok.strip(",.")
+        if skip_next and _RANK_AFTER_C.match(bare):
+            skip_next = False
+            continue
+        skip_next = False
+        if _RANK.match(bare):
+            continue
+        if bare.lower().startswith("c/"):
+            skip_next = True  # "C/2d Lt": the grade can run into a second word
+            continue
+        out.append(tok)
+    return collapse(" ".join(out)).strip(" ,")
+
+
 def split_names(s: str) -> list[str]:
-    return [collapse(n) for n in re.split(r"[,;\n]", s or "") if collapse(n)]
+    """Typed recipient list. Commas separate people, but a one-word piece can't be a whole name,
+    so it's a surname written "Last, First": 'Doe, John, Amy Wu' -> John Doe, Amy Wu."""
+    chunks = [strip_rank(n) for n in re.split(r"[,;\n]", s or "")]
+    chunks = [c for c in chunks if c]
+    out, i = [], 0
+    while i < len(chunks):
+        c = chunks[i]
+        if len(c.split(" ")) == 1 and i + 1 < len(chunks):
+            out.append(collapse(f"{chunks[i + 1]} {c}"))
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return [canon(n) for n in out]
+
+
+# Spellings the user confirmed are the same person: lowercased name -> correct name.
+ALIASES: dict[str, str] = {}
+
+
+def canon(name: str) -> str:
+    return ALIASES.get(collapse(name).lower(), collapse(name))
+
+
+def levenshtein(a: str, b: str, cap: int = 3) -> int:
+    """Edit distance, giving up early once it exceeds ``cap``."""
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > cap:
+            return cap + 1
+        prev = cur
+    return prev[-1]
 
 
 def single_name(name: str) -> str:
     """A detected recipient is always one person: 'Doe, John' → 'John Doe', never a list."""
-    name = form_name_to_display(name)
-    return collapse(name.replace(",", " "))
+    name = form_name_to_display(strip_rank(name))
+    return canon(strip_rank(name.replace(",", " ")))
 
 
 def recipient_names(meta: dict, auto_recipients: str) -> list[str]:
@@ -95,7 +157,7 @@ def form_name_to_display(name: str) -> str:
     """'Doe, John A' → 'John A Doe' (forms ask for Last, First, MI)."""
     name = collapse(name)
     parts = [p.strip() for p in name.split(",") if p.strip()]
-    if len(parts) in (2, 3):
+    if len(parts) >= 2:
         last, rest = parts[0], " ".join(parts[1:])
         return collapse(f"{rest} {last}")
     return name
@@ -175,8 +237,16 @@ def other_text(raw) -> str:
 
 
 def cdna_applies(form_type: str, pos_neg: str) -> bool:
-    """CDNA is entered by hand, and only for positive Form 10s."""
+    """CDNA and Passes are entered by hand, and only for positive Form 10s."""
     return form_type == "F10" and pos_neg == "Pos"
+
+
+def missing_manual(rec: dict) -> list[str]:
+    """Required hand-entered values still blank (a positive F10 needs CDNA and Passes)."""
+    if not cdna_applies(rec.get("form_type", ""), rec.get("pos_neg", "")):
+        return []
+    labels = {"cdna": "CDNA", "passes": "Passes"}
+    return [labels[k] for k in MANUAL_POS_F10 if not collapse(rec.get(k))]
 
 
 def month_label(iso: str | None, fmt: str) -> str:
@@ -195,6 +265,7 @@ def month_label(iso: str | None, fmt: str) -> str:
 
 
 def name_key(n: str) -> str:
+    n = strip_rank(n)
     """Order-insensitive key so 'Doe John' and 'John Doe' land on the same cadet."""
     toks = sorted(t for t in re.split(r"[^a-z]+", n.lower()) if len(t) > 1)
     return " ".join(toks)
@@ -267,6 +338,7 @@ def auto_record(meta: dict, settings: dict, roster: dict) -> dict:
         "reason_details": details,
         "issuer": issuer,
         "cdna": "",  # never on the form: typed in by hand (positive F10s only)
+        "passes": "",  # same as CDNA
         **{k: sanction_count(f.get(k), slots.get(k), a.get("mode") == "raster") if ft == "F10" else ""
            for k in SANCTION_FIELDS},
         "other": "; ".join(other_bits),
@@ -319,7 +391,7 @@ def sheet_rows(rec: dict, settings: dict, roster: dict) -> list[list[str]]:
             name,
             rec.get("issuer", ""),
             pn_label,
-            str(rec.get("cdna", "") or "") if cdna_applies(rec.get("form_type", ""), pn) else "",
+            *[str(rec.get(k, "") or "") if cdna_applies(rec.get("form_type", ""), pn) else "" for k in MANUAL_POS_F10],
             *[str(rec.get(k, "") or "") if rec.get("form_type") == "F10" else "" for k in SANCTION_FIELDS],
             rec.get("other", ""),
         ])
