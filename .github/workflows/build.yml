@@ -17,9 +17,9 @@ jobs:
         include:
           - os: windows-latest
             args: --win --x64
-          - os: macos-14 # Apple silicon
+          - os: macos-latest # Apple silicon
             args: --mac --arm64
-          - os: macos-13 # Intel
+          - os: macos-15-intel # Intel
             args: --mac --x64
           - os: ubuntu-latest
             args: --linux --x64
@@ -49,7 +49,9 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # publish whatever built, so one platform failing doesn't hold back the others
+    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.build.result != 'cancelled'
+
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -60,5 +62,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          name: closet ${{ github.ref_name }}
           files: dist/*
           generate_release_notes: true
+          fail_on_unmatched_files: false
