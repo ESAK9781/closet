@@ -1,6 +1,6 @@
 {
-  "name": "the-closet",
-  "productName": "The Closet",
+  "name": "closet",
+  "productName": "closet",
   "version": "2.0.0",
   "description": "Paperwork tracker for AFCW Form 10s and AF Form 174s",
   "author": {
@@ -33,14 +33,14 @@
     "electron-builder": "^26.0.12",
     "playwright-core": "^1.58.0"
   },
-  "homepage": "https://github.com/ESAK9781/the-closet",
+  "homepage": "https://github.com/ESAK9781/closet",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ESAK9781/the-closet.git"
+    "url": "https://github.com/ESAK9781/closet.git"
   },
   "build": {
     "appId": "com.esak.thecloset",
-    "productName": "The Closet",
+    "productName": "closet",
     "copyright": "Copyright © 2026 Elijah Sakamoto",
     "asar": false,
     "directories": {
@@ -81,13 +81,13 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "The Closet",
+      "shortcutName": "closet",
       "deleteAppDataOnUninstall": false,
       "license": "LICENSE",
-      "artifactName": "The-Closet-Setup.${ext}"
+      "artifactName": "closet-setup.${ext}"
     },
     "portable": {
-      "artifactName": "The-Closet-portable.${ext}"
+      "artifactName": "closet-portable.${ext}"
     },
     "mac": {
       "target": [
@@ -99,7 +99,7 @@
         }
       ],
       "category": "public.app-category.productivity",
-      "artifactName": "The-Closet-mac-${arch}.${ext}"
+      "artifactName": "closet-mac-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -112,17 +112,17 @@
       ],
       "category": "Office",
       "synopsis": "Paperwork tracker for AFCW Form 10s and AF Form 174s",
-      "artifactName": "The-Closet-linux-${arch}.${ext}"
+      "artifactName": "closet-linux-${arch}.${ext}"
     },
     "publish": null,
     "dmg": {
-      "artifactName": "The-Closet-mac-${arch}.${ext}"
+      "artifactName": "closet-mac-${arch}.${ext}"
     },
     "appImage": {
-      "artifactName": "The-Closet-linux-x86_64.${ext}"
+      "artifactName": "closet-linux-x86_64.${ext}"
     },
     "deb": {
-      "artifactName": "The-Closet-linux-amd64.${ext}"
+      "artifactName": "closet-linux-amd64.${ext}"
     }
   }
 }

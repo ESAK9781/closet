@@ -1,4 +1,4 @@
-// The Closet: Electron main process.
+// closet: Electron main process.
 //
 // Owns the Store (metadata folder + parser threads) and serves the UI from a private closet://
 // scheme. The UI talks to the store through one IPC channel that keeps the REST-style paths the
@@ -32,9 +32,14 @@ function loadConfig() {
   try {
     config = JSON.parse(fs.readFileSync(CONFIG(), "utf8"));
   } catch {
-    config = {};
+    // First run under the "closet" name: carry settings over from when it was called "The Closet"
+    try {
+      config = JSON.parse(fs.readFileSync(path.join(app.getPath("appData"), "The Closet", "config.json"), "utf8"));
+    } catch {
+      config = {};
+    }
   }
-  if (!config.dumpDir) config.dumpDir = path.join(app.getPath("documents"), "The Closet", "dump");
+  if (!config.dumpDir) config.dumpDir = path.join(app.getPath("documents"), "closet", "dump");
   saveConfig();
 }
 
@@ -180,7 +185,7 @@ function createWindow() {
     y: visible ? b.y : undefined,
     minWidth: 900,
     minHeight: 620,
-    title: "The Closet",
+    title: "closet",
     icon: fs.existsSync(ICON) ? ICON : undefined,
     backgroundColor: "#0f1319",
     show: false,

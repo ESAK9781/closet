@@ -1,4 +1,4 @@
-/* The Closet — frontend (no build step). */
+/* closet — frontend (no build step). */
 "use strict";
 
 // ------------------------------------------------------------------ constants
@@ -220,7 +220,7 @@ async function load() {
     S.data = await api("/api/state");
     S.version = S.data.version;
   } catch (e) {
-    $("#main").innerHTML = `<div class="banner">${icon("alert")}<span>The Closet couldn't load its data: ${esc(e.message)}</span></div>`;
+    $("#main").innerHTML = `<div class="banner">${icon("alert")}<span>closet couldn't load its data: ${esc(e.message)}</span></div>`;
     return;
   }
   renderNav();
@@ -378,7 +378,7 @@ function viewOverview() {
 
   if (!all.length) {
     $("#main").innerHTML = head("Overview") + banners() + `
-      <div class="panel"><div class="empty">${icon("folder")}<h3>The closet is empty</h3>
+      <div class="panel"><div class="empty">${icon("folder")}<h3>No paperwork yet</h3>
       <p>Drag paperwork PDFs onto this window, or put them in <b>${esc(S.data.dump_dir)}</b>. Name them like <b>John Doe_Neg_F10_Uniform Violation.pdf</b>.</p>
       <div style="display:flex;gap:10px;justify-content:center;margin-top:18px">
         <button class="btn primary" type="button" id="emptyOpen">${icon("folder")}Open dump folder</button>
@@ -1326,7 +1326,7 @@ function viewSettings() {
       ${row("Position tolerance", "A field counts as matching the template when every edge is within this many points (1 pt ≈ 1 px at 72 dpi). Changing it re-reads every form.", `<input class="input" type="number" min="2" max="40" step="1" data-set="position_tolerance_pt" value="${esc(s.position_tolerance_pt)}">`)}
     </div></section>
     <section class="panel"><div class="panel-head"><h2>Start over</h2></div><div class="panel-body">
-      ${row("Clear metadata and rescan", "Forgets everything The Closet has recorded and reads every PDF in the dump folder again from scratch. This erases your edits, reviews, signatures set by hand, archive choices, and “logged” marks. Settings are kept, and the PDFs themselves are never touched.",
+      ${row("Clear metadata and rescan", "Forgets everything closet has recorded and reads every PDF in the dump folder again from scratch. This erases your edits, reviews, signatures set by hand, archive choices, and “logged” marks. Settings are kept, and the PDFs themselves are never touched.",
         `<button class="btn" type="button" id="resetAll" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("refresh")}Clear metadata and rescan</button>`)}
     </div></section>
     <section class="panel"><div class="panel-head"><h2>Folders</h2></div><div class="panel-body">

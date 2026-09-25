@@ -1,12 +1,12 @@
-# The Closet
+# closet
 
-A desktop app for the first sergeant. Drop AFCW Form 10s and AF Form 174s into a folder and The
-Closet reads them, tracks who has signed, flags anything that needs a person, and gives you rows
+A desktop app for the first sergeant. Drop AFCW Form 10s and AF Form 174s into a folder and closet reads them, tracks who has signed, flags anything that needs a person, and gives you rows
 ready to paste into the **Conduct Log** tab of the master discipline tracker.
 
 Runs on Windows, macOS, and Linux. Everything stays on your computer. MIT licensed.
 
-`index.html` is the project's landing page.
+**Website and downloads: [esak9781.github.io/closet](https://esak9781.github.io/closet/)** (the
+landing page is `index.html`, published with GitHub Pages).
 
 ## Install
 
@@ -14,13 +14,13 @@ Download the installer for your system (from the landing page or the repository'
 
 | System | File |
 |---|---|
-| Windows | `The-Closet-Setup.exe` (installs, adds Desktop and Start Menu shortcuts), or `The-Closet-portable.exe` (no install) |
-| macOS | `The-Closet-mac-arm64.dmg` (Apple silicon) or `The-Closet-mac-x64.dmg` (Intel). Not notarized yet: the first time, right-click the app and choose Open. |
-| Linux | `The-Closet-linux-x86_64.AppImage`, or `The-Closet-linux-amd64.deb` for Debian/Ubuntu |
+| Windows | `closet-setup.exe` (installs, adds Desktop and Start Menu shortcuts), or `closet-portable.exe` (no install) |
+| macOS | `closet-mac-arm64.dmg` (Apple silicon) or `closet-mac-x64.dmg` (Intel). Not notarized yet: the first time, right-click the app and choose Open. |
+| Linux | `closet-linux-x86_64.AppImage`, or `closet-linux-amd64.deb` for Debian/Ubuntu |
 
 ## Using it
 
-On first launch The Closet uses `Documents/The Closet/dump` for paperwork, with its `metadata`
+On first launch closet uses `Documents/closet/dump` for paperwork, with its `metadata`
 folder next to it. Pick a different dump folder in **Settings → Folders**. An existing
 `dump`/`metadata` pair from an earlier version carries straight over, edits included. PDFs are
 never moved or changed. You can also drag PDFs onto the window, which copies them into the dump
@@ -35,7 +35,7 @@ sanctions, and signatures.
 
 ### How forms are read
 
-Field names differ between versions of these forms, so The Closet matches by **position and field
+Field names differ between versions of these forms, so closet matches by **position and field
 type** against the blank templates built into the app:
 
 1. Each page is compared with the template pages. This picks the form type and finds the form
@@ -53,7 +53,7 @@ step can be recorded by hand when someone signs later.
 
 - **Names** never include rank (C1C–C4C, "Cadet", C/ grades), and "Last, First" becomes "First
   Last". In the Recipient(s) box, commas separate people (a one-word piece is a surname), and each
-  person gets their own sheet row. The Closet asks for any class year it doesn't already know.
+  person gets their own sheet row. closet asks for any class year it doesn't already know.
 - **Typos:** names within two letters of each other prompt a same-person check; the answer is
   remembered in `metadata/names.json`.
 - **CDNA** and **Passes** aren't on the form. They're typed in, only apply to positive Form 10s, and

@@ -1,4 +1,4 @@
-# Builds The Closet's installers on every platform.
+# Builds closet's installers on every platform.
 #   - Run it by hand from the Actions tab ("Run workflow"): installers are attached to the run.
 #   - Push a tag like v2.0.0: the installers are also published as a GitHub release, which is where
 #     the landing page's download links point (releases/latest/download/...).
@@ -38,7 +38,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false # unsigned builds (no code-signing certificate configured)
       - uses: actions/upload-artifact@v4
         with:
-          name: the-closet-${{ matrix.os }}
+          name: closet-${{ matrix.os }}
           if-no-files-found: error
           path: |
             dist/*.exe

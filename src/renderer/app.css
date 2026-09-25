@@ -1,4 +1,4 @@
-/* The Closet — dark, quiet, one brass accent. */
+/* closet — dark, quiet, one brass accent. */
 /* Archivo (SIL OFL) ships with the app so it looks the same offline. */
 @font-face { font-family: "Archivo"; src: url("fonts/archivo-latin-wdth-normal.woff2") format("woff2-variations"); font-weight: 100 900; font-stretch: 62% 125%; font-display: swap; }
 :root {
@@ -419,6 +419,7 @@ table.t .dim { color: var(--faint); }
 
 @media (max-width: 1280px) {
   .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kpis > :last-child { grid-column: span 2; } /* 3 + 2 rows without a hole */
 }
 @media (max-width: 1100px) {
   .grid-2, .grid-2b { grid-template-columns: minmax(0, 1fr); }
@@ -440,6 +441,7 @@ table.t .dim { color: var(--faint); }
   .rail-foot { display: none; }
   .main { padding: 20px 16px 50px; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpis > :last-child { grid-column: span 2; }
   .fields { grid-template-columns: 1fr; }
   .search { min-width: 0; width: 100%; }
   .set-row { grid-template-columns: 1fr; }

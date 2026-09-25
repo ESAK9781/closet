@@ -8,7 +8,7 @@ bad=$(git diff --cached --name-only --diff-filter=ACMR | while IFS= read -r f; d
   esac
 done)
 if [ -n "$bad" ]; then
-  echo "The Closet: refusing to commit personal paperwork / metadata:" >&2
+  echo "closet: refusing to commit personal paperwork / metadata:" >&2
   echo "$bad" >&2
   echo "Unstage them with: git restore --staged <file>" >&2
   exit 1

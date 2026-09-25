@@ -70,7 +70,7 @@ export class Store extends EventEmitter {
   /**
    * @param {object} o
    * @param {string} o.dumpDir     where the PDFs live (never modified)
-   * @param {string} o.metaDir     where everything The Closet learns is kept
+   * @param {string} o.metaDir     where everything closet learns is kept
    * @param {string} o.templatesDir bundled blank templates
    * @param {number} [o.workers]   parser threads
    */
@@ -85,7 +85,7 @@ export class Store extends EventEmitter {
     const readme = path.join(this.meta, "README.txt");
     if (!fs.existsSync(readme)) {
       fs.writeFileSync(readme, [
-        "The Closet - metadata folder", "",
+        "closet - metadata folder", "",
         "forms/<id>.json   one file per PDF in the dump folder: cached read + your edits (overrides)",
         "renders/<id>/     cached page images used by the app",
         "templates/        cached geometry of the blank template forms",
