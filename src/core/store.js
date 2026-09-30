@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { ParserPool } from "./pool.js";
+import { quickDump } from "./quickdump.js";
 import * as R from "./records.js";
 import { FORM_TYPES } from "./templates.js";
 
@@ -22,7 +23,7 @@ export const DEFAULT_SETTINGS = {
   pos_label: "Pos",
   neg_label: "Neg",
   month_format: "name",
-  f174_commander_role: "cadet_sqcc_signed",
+  f174_commander_role: "aoc_signed",
   include_header: false,
   position_tolerance_pt: 10,
 };
@@ -381,6 +382,20 @@ export class Store extends EventEmitter {
     }
     a.parse_seconds = Math.round((Date.now() - t0) / 10) / 100;
     if (gen !== this.generation || this.metas.get(m.id) !== m) return; // cleared while it was being read
+    // A machine-readable form that comes back as a scan is the print-sign-scan round trip. Reading
+    // the scan would replace real values with blanks and guessed ink, so keep the earlier read, show
+    // the new pages, and send it back to review for a person to check the signatures.
+    const prev = m.analysis;
+    const scannedBack = m.sha1 && m.sha1 !== sha && prev && !prev.error && prev.mode !== "raster" && a.mode === "raster";
+    if (scannedBack) {
+      const { renders, render_scale, page_count, page_map, layout_scores, registration, parse_seconds } = a;
+      a = { ...prev, renders, render_scale, page_count, page_map, layout_scores, registration, parse_seconds, scanned_copy: true };
+      m.scan_replaced_at = now();
+      Object.assign(m, { reviewed: false, reviewed_at: null });
+      m.history = [...(m.history || []), { at: now(), what: "Scanned copy uploaded; earlier read kept, sent back for review" }].slice(-60);
+    } else {
+      delete m.scan_replaced_at;
+    }
     Object.assign(m, {
       size: st.size, mtime: st.mtimeMs / 1000, sha1: sha, parser_version: PARSER_VERSION,
       analysis: a, filename_info: R.parseFilename(m.filename), parsed_at: now(),
@@ -401,6 +416,7 @@ export class Store extends EventEmitter {
       review(a.error);
       return out;
     }
+    if (m.scan_replaced_at) review("Replaced with a scanned copy. The earlier read was kept, not re-read: check the signatures and initials by hand");
     if (!fn.pos_neg) review("Filename has no Pos/Neg part, so it can't tell positive from negative");
     if (!fn.reason) warn("Filename has no reason part, so Reason Category is blank");
     for (const n of a.type_notes || []) review(n);
@@ -503,6 +519,68 @@ export class Store extends EventEmitter {
     return added;
   }
 
+  /**
+   * Copy PDFs into the dump folder, but pause on a name collision instead of silently renaming:
+   * used by the "Add files" button, where the caller can ask whether a collision is an updated
+   * (e.g. newly signed) copy of the same paperwork rather than a different form.
+   */
+  stageFiles(paths) {
+    const added = [];
+    const conflicts = [];
+    for (const src of paths) {
+      if (!src.toLowerCase().endsWith(".pdf") || !fs.existsSync(src)) continue;
+      if (path.dirname(path.resolve(src)) === this.dump) continue; // already there
+      const name = path.basename(src);
+      if (fs.existsSync(path.join(this.dump, name))) {
+        conflicts.push({ src, name });
+      } else {
+        fs.copyFileSync(src, path.join(this.dump, name), fs.constants.COPYFILE_EXCL);
+        added.push(name);
+      }
+    }
+    if (added.length) this.scan();
+    return { added, conflicts };
+  }
+
+  /**
+   * Settle one name collision from stageFiles(): "replace" overwrites the existing PDF's content
+   * (same id, so edits/flags/history carry over -- an updated or newly signed copy); "keep-both"
+   * adds it alongside under a suffixed name; "skip" leaves the dump folder untouched.
+   */
+  resolveConflict(name, src, action) {
+    if (action === "skip" || !fs.existsSync(src)) return null;
+    if (action === "replace") {
+      fs.copyFileSync(src, path.join(this.dump, name));
+      const m = this.metas.get(formId(name));
+      if (m) {
+        m.history = [...(m.history || []), { at: now(), what: "Replaced with an uploaded copy" }].slice(-60);
+        this.save(m);
+      }
+      this.scan();
+      return name;
+    }
+    const base = path.basename(name, ".pdf");
+    let alt = name;
+    for (let i = 2; fs.existsSync(path.join(this.dump, alt)); i++) alt = `${base} (${i}).pdf`;
+    fs.copyFileSync(src, path.join(this.dump, alt));
+    this.scan();
+    return alt;
+  }
+
+  /**
+   * Overwrite one form's PDF with an updated copy (e.g. the same paperwork scanned back in with a
+   * signature on it now), keeping the same filename so edits, flags and history carry over.
+   */
+  replaceFile(id, src) {
+    const m = this.metas.get(id);
+    if (!m) throw new Error("No such form");
+    if (!fs.existsSync(src)) throw new Error("That file no longer exists");
+    fs.copyFileSync(src, path.join(this.dump, m.filename));
+    m.history = [...(m.history || []), { at: now(), what: "Replaced with an uploaded copy" }].slice(-60);
+    this.save(m);
+    this.scan();
+  }
+
   // ------------------------------------------------------------------ views
   snapshot() {
     const metas = [...this.metas.values()];
@@ -578,6 +656,10 @@ export class Store extends EventEmitter {
       lines.push(...f.rows.map((r) => r.join("\t")));
     }
     return lines.join("\n");
+  }
+
+  quickDump(outDir) {
+    return quickDump(this, outDir);
   }
 
   pageImage(id, n) {

@@ -31,6 +31,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Release tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: test "v$(node -p "require('./package.json').version")" = "${{ github.ref_name }}"
       - run: npm test
       - name: Build installers
         run: npx electron-builder ${{ matrix.args }} --publish never
@@ -46,6 +50,9 @@ jobs:
             dist/*.zip
             dist/*.AppImage
             dist/*.deb
+            dist/latest.yml
+            dist/latest-linux.yml
+            dist/*.blockmap
 
   release:
     needs: build

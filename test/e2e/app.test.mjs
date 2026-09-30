@@ -162,6 +162,21 @@ test("sheet export copies tab-separated rows and marks them logged", async () =>
   assert.ok(s.forms.filter((f) => !f.archived).every((f) => f.logged));
 });
 
+test("export filter: only positive, only negative, or off", async () => {
+  await go("export");
+  await page.click('[data-em="all"]');
+  const s = await state();
+  const rowsFor = (pn) => s.forms.filter((f) => !f.archived && !f.missing && f.parsed && (!pn || f.record.pos_neg === pn)).reduce((n, f) => n + f.rows.length, 0);
+  const shown = () => page.$$eval(".export-rows tbody tr", (r) => r.length);
+  assert.equal(await shown(), rowsFor(null));
+  await page.click('[data-epn="Pos"]');
+  assert.equal(await shown(), rowsFor("Pos"));
+  await page.click('[data-epn="Neg"]');
+  assert.equal(await shown(), rowsFor("Neg"));
+  await page.click('[data-epn="Neg"]'); // clicking the active filter turns it off
+  assert.equal(await shown(), rowsFor(null));
+});
+
 test("clear metadata and rescan", async () => {
   await go("settings");
   await page.click("#resetAll");

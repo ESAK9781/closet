@@ -4,7 +4,7 @@
 // ------------------------------------------------------------------ constants
 const FLAGS = [
   ["sqccf_processed", "SQ/CCF", "Processed by SQ/CCF"],
-  ["cadet_sqcc_signed", "Cadet SQ/CC", "Signed by Cadet SQ/CC"],
+  ["cadet_cc_initialed", "Cadet CC", "Initialed by Cadet Commander"],
   ["recipient_signed", "Recipient", "Signed by recipient"],
   ["aoc_signed", "AOC/AMT", "Signed by AOC/AMT"],
 ];
@@ -48,6 +48,8 @@ const I = {
   folder: '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>',
   chev: '<path d="m9 18 6-6-6-6"/>',
   archive: '<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
 };
 const icon = (n, cls = "") => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
 
@@ -61,6 +63,7 @@ const S = {
   cadetQ: "",
   cadetOpen: null,
   exportMode: "unlogged",
+  exportPn: "all",
   exportPicked: new Set(),
   detail: null,      // full detail of the open form
   host: null,        // "drawer" | "review"
@@ -115,7 +118,7 @@ function toast(msg, err = false) {
 // ------------------------------------------------------------------ in-app dialogs
 // Electron has no window.prompt(), and confirm() is a blocking native box, so questions are asked
 // in the page. Resolves with the chosen value, the typed text, or null when dismissed (Esc).
-function ask({ title, message = "", input = null, choices = null, danger = false }) {
+function ask({ title, message = "", input = null, select = null, choices = null, danger = false }) {
   return new Promise((resolve) => {
     const prev = document.activeElement;
     const scrim = document.createElement("div");
@@ -124,9 +127,11 @@ function ask({ title, message = "", input = null, choices = null, danger = false
     scrim.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
       <h2 id="mTitle">${esc(title)}</h2>${message ? `<div class="modal-msg">${message}</div>` : ""}
       ${input ? `<input class="input" id="mInput" value="${esc(input.value || "")}" placeholder="${esc(input.placeholder || "")}" autocomplete="off" spellcheck="false"><div class="modal-err" id="mErr" role="alert"></div>` : ""}
+      ${select ? `<select class="select" id="mSelect" style="width:100%;margin-top:10px">${select.options.map(([v, l]) => `<option value="${esc(v)}" ${v === select.value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>` : ""}
       <div class="modal-actions">${btns.map((b, i) => `<button type="button" class="btn ${b.primary ? (danger ? "danger" : "primary") : "ghost"}" data-i="${i}">${esc(b.label)}</button>`).join("")}</div></div>`;
     document.body.appendChild(scrim);
     const field = $("#mInput", scrim);
+    const sel = $("#mSelect", scrim);
     const done = (v) => {
       scrim.remove();
       document.removeEventListener("keydown", onKey, true);
@@ -135,6 +140,7 @@ function ask({ title, message = "", input = null, choices = null, danger = false
     };
     const pick = (b) => {
       if (b.value === null) return done(null);
+      if (sel) return done(sel.value);
       if (!input) return done(b.value);
       const text = field.value.trim();
       const err = input.validate ? input.validate(text) : "";
@@ -144,11 +150,11 @@ function ask({ title, message = "", input = null, choices = null, danger = false
     const primary = btns.find((b) => b.primary) || btns[btns.length - 1];
     const onKey = (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
-      if (e.key === "Enter" && (field ? document.activeElement === field : true)) { e.preventDefault(); e.stopPropagation(); pick(primary); }
+      if (e.key === "Enter" && (field ? document.activeElement === field : !sel || document.activeElement === sel)) { e.preventDefault(); e.stopPropagation(); pick(primary); }
     };
     document.addEventListener("keydown", onKey, true);
     $$("[data-i]", scrim).forEach((b) => (b.onclick = () => pick(btns[+b.dataset.i])));
-    requestAnimationFrame(() => (field || $$(".modal-actions .btn", scrim).at(-1)).focus());
+    requestAnimationFrame(() => (field || sel || $$(".modal-actions .btn", scrim).at(-1)).focus());
   });
 }
 const modalOpen = () => Boolean($(".modal-scrim"));
@@ -379,11 +385,11 @@ function viewOverview() {
   if (!all.length) {
     $("#main").innerHTML = head("Overview") + banners() + `
       <div class="panel"><div class="empty">${icon("folder")}<h3>No paperwork yet</h3>
-      <p>Drag paperwork PDFs onto this window, or put them in <b>${esc(S.data.dump_dir)}</b>. Name them like <b>John Doe_Neg_F10_Uniform Violation.pdf</b>.</p>
+      <p>Drag paperwork PDFs onto this window, or use <b>Add files</b> on the Paperwork page. Name them like <b>John Doe_Neg_F10_Uniform Violation.pdf</b>.</p>
       <div style="display:flex;gap:10px;justify-content:center;margin-top:18px">
-        <button class="btn primary" type="button" id="emptyOpen">${icon("folder")}Open dump folder</button>
+        <button class="btn primary" type="button" id="emptyAdd">${icon("upload")}Add files</button>
         <button class="btn" type="button" id="emptyChoose">Use a different folder</button></div></div></div>`;
-    $("#emptyOpen").onclick = () => closet.openFolder("dump");
+    $("#emptyAdd").onclick = bulkUpload;
     $("#emptyChoose").onclick = chooseDump;
     return;
   }
@@ -538,11 +544,18 @@ function viewPaperwork() {
         ${[["all", "Any status"], ["awaiting", "Awaiting a signature"], ["complete", "Fully routed"], ["review", "Needs review"], ["incomplete", "Missing CDNA/Passes"], ["unlogged", "Not in the tracker"], ["logged", "In the tracker"]]
           .map(([v, l]) => `<option value="${v}" ${S.f.status === v ? "selected" : ""}>${l}</option>`).join("")}
       </select>
-      <span class="spacer"></span><span id="countLbl" style="color:var(--muted);font-size:13px"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost small" type="button" id="bulkUpload" title="Pick PDFs to add to the dump folder">${icon("upload")}Add files</button>
+      <button class="btn ghost small" type="button" id="bulkDownload" title="Download every form still awaiting a particular signature">${icon("download")}Download by signature</button>
+      <button class="btn ghost small" type="button" id="quickDump" title="Sort every form into a folder by the first step it is still waiting on">${icon("download")}Quick dump</button>
+      <span id="countLbl" style="color:var(--muted);font-size:13px"></span>
     </div>
     <div id="results"></div>`;
   $("#q").oninput = (e) => { S.f.q = e.target.value; renderPaperRows(); };
   $("#status").onchange = (e) => { S.f.status = e.target.value; renderPaperRows(); };
+  $("#bulkUpload").onclick = bulkUpload;
+  $("#bulkDownload").onclick = bulkDownloadBySignature;
+  $("#quickDump").onclick = quickDump;
   $$("[data-seg]").forEach((b) => (b.onclick = () => {
     S.f[b.dataset.seg] = b.dataset.v;
     $$(`[data-seg="${b.dataset.seg}"]`).forEach((x) => x.setAttribute("aria-pressed", x === b));
@@ -687,7 +700,8 @@ function detailHead(d) {
   const chips = [];
   if (r.form_type) chips.push(`<span class="chip type">${esc(r.form_type === "F10" ? "AFCW Form 10" : r.form_type === "F174" ? "AF Form 174" : r.form_type)}</span>`);
   if (d.parsed) chips.push(pnChip(r.pos_neg));
-  if (a.mode) chips.push(`<span class="chip ${a.mode === "fields" ? "" : "warn"}">${MODE_LABEL[a.mode]}</span>`);
+  if (a.scanned_copy) chips.push('<span class="chip warn" title="Printed, signed and scanned back in. The values from the earlier read are kept.">Scanned copy</span>');
+  else if (a.mode) chips.push(`<span class="chip ${a.mode === "fields" ? "" : "warn"}">${MODE_LABEL[a.mode]}</span>`);
   if (a.page_count) chips.push(`<span class="chip">${plural(a.page_count, "page")}</span>`);
   if (d.needs_review) chips.push('<span class="chip crit">Needs review</span>');
   else if (d.reviewed) chips.push(`<span class="chip good" title="${esc(fmtStamp(d.reviewed_at))}">Reviewed</span>`);
@@ -697,6 +711,8 @@ function detailHead(d) {
   return `<header class="d-head"><div style="min-width:0"><h2>${names ? esc(names) : `<span style="color:var(--muted)">${d.parsed ? "No name on the form" : "Reading…"}</span>`}</h2><div class="fn">${esc(d.filename)}</div><div class="chips">${chips.join("")}</div></div>
     <div class="spacer"></div><div class="acts">
       <button class="btn ghost small" type="button" data-act="openpdf" title="Open in your PDF viewer (Shift-click: show in folder)">${icon("ext")}Open PDF</button>
+      <button class="btn ghost small" type="button" data-act="download" title="Save a copy of this PDF">${icon("download")}Download</button>
+      <button class="btn ghost small" type="button" data-act="upload" title="Replace this PDF with an updated (e.g. signed) copy">${icon("upload")}Upload updated copy</button>
       <button class="btn ghost small" type="button" data-act="copyrows">${icon("copy")}Copy sheet rows</button>
       <button class="btn ghost small" type="button" data-act="reparse" title="Read the PDF again (your edits are kept)">${icon("refresh")}Re-read</button>
       ${d.archived
@@ -740,10 +756,12 @@ function issuesBlock(d) {
 
 function routeBig(d) {
   const vals = FLAGS.map(([k]) => currentValue(k));
+  const n = FLAGS.length;
   let lastDone = -1;
   vals.forEach((v, i) => { if (v === true && (i === 0 || lastDone === i - 1)) lastDone = i; });
-  const fillW = lastDone <= 0 ? 0 : (lastDone / 3) * 75;
-  return `<div class="route-lg"><span class="fill" style="width:${fillW}%"></span>${FLAGS.map(([k, short, long], i) => {
+  const span = 100 - 100 / n;
+  const fillW = lastDone <= 0 ? 0 : (lastDone / (n - 1)) * span;
+  return `<div class="route-lg" style="--n:${n}"><span class="fill" style="width:${fillW}%"></span>${FLAGS.map(([k, short, long], i) => {
     const v = vals[i];
     const auto = d.record.auto[k];
     const overridden = (k in S.edit.overrides) ? S.edit.overrides[k] !== null : d.record.overridden.includes(k);
@@ -1023,6 +1041,20 @@ async function act(a) {
     if (err) toast(err, true);
     return;
   }
+  if (a === "download") {
+    const r = await closet.downloadPdf(d.id);
+    if (r?.ok) toast(`Saved a copy to ${r.path}`);
+    else if (r?.error) toast(r.error, true);
+    return;
+  }
+  if (a === "upload") {
+    const r = await closet.uploadReplacement(d.id);
+    if (r?.ok) {
+      toast("Replaced with the updated copy. Reading it again…");
+      setTimeout(async () => { await load(); if (S.detail?.id === d.id) openForm(d.id, { keepPage: true, silent: true, host: S.host }); }, 1500);
+    } else if (r?.error) toast(r.error, true);
+    return;
+  }
   if (a === "archive" || a === "unarchive") {
     if (!(await okToDiscard("this form"))) return;
     const on = a === "archive";
@@ -1226,17 +1258,19 @@ function renderCadetRows() {
 // ------------------------------------------------------------------ export
 function exportForms() {
   const list = parsed().slice().sort((a, b) => (a.record.date_iso || "9").localeCompare(b.record.date_iso || "9") || a.filename.localeCompare(b.filename));
-  if (S.exportMode === "unlogged") return list.filter((f) => !f.logged);
-  return list;
+  return list.filter((f) => (S.exportMode !== "unlogged" || !f.logged) && (S.exportPn === "all" || f.record.pos_neg === S.exportPn));
 }
 function viewExport() {
   const cols = S.data.columns;
   $("#main").innerHTML = head("Sheet export", "Rows in the same column order as the Conduct Log (A to M). Copy them, click the first empty Date cell in the tracker, and paste. A form with several recipients gives one row per person.") + `
     <div class="toolbar"><div class="seg" role="group">
       ${[["unlogged", "Not in tracker yet"], ["all", "All paperwork"]].map(([v, l]) => `<button type="button" data-em="${v}" aria-pressed="${S.exportMode === v}">${l}</button>`).join("")}</div>
+      <div class="seg" role="group" aria-label="Positive or negative">
+      ${[["Neg", "Negative only"], ["Pos", "Positive only"]].map(([v, l]) => `<button type="button" title="Click again to show both" data-epn="${v}" aria-pressed="${S.exportPn === v}">${l}</button>`).join("")}</div>
       <span class="spacer"></span><button class="btn ghost small" type="button" id="selAll">Select all</button><button class="btn ghost small" type="button" id="selNone">Clear selection</button></div>
     <div id="results"></div>`;
   $$("[data-em]").forEach((b) => (b.onclick = () => { S.exportMode = b.dataset.em; S.exportPicked.clear(); viewExport(); }));
+  $$("[data-epn]").forEach((b) => (b.onclick = () => { S.exportPn = S.exportPn === b.dataset.epn ? "all" : b.dataset.epn; S.exportPicked.clear(); viewExport(); }));
   $("#selAll").onclick = () => { exportForms().forEach((f) => S.exportPicked.add(f.id)); renderExportRows(); };
   $("#selNone").onclick = () => { S.exportPicked.clear(); renderExportRows(); };
   if (!S.exportPicked.size) exportForms().forEach((f) => S.exportPicked.add(f.id));
@@ -1248,7 +1282,7 @@ function renderExportRows() {
   const ids = new Set(list.map((f) => f.id));
   [...S.exportPicked].forEach((id) => { if (!ids.has(id)) S.exportPicked.delete(id); });
   if (!list.length) {
-    $("#results").innerHTML = `<div class="panel"><div class="empty">${icon("check")}<h3>${S.exportMode === "unlogged" ? "The tracker is up to date" : "No paperwork yet"}</h3><p>${S.exportMode === "unlogged" ? "Every form has been marked as logged. Switch to All paperwork to copy rows again." : ""}</p></div></div>`;
+    $("#results").innerHTML = `<div class="panel"><div class="empty">${icon("check")}<h3>${S.exportPn !== "all" ? `No ${S.exportPn === "Pos" ? "positive" : "negative"} paperwork here` : S.exportMode === "unlogged" ? "The tracker is up to date" : "No paperwork yet"}</h3><p>${S.exportPn !== "all" ? "Click the highlighted filter again, or switch to All paperwork, to see more." : S.exportMode === "unlogged" ? "Every form has been marked as logged. Switch to All paperwork to copy rows again." : ""}</p></div></div>`;
     return;
   }
   const picked = list.filter((f) => S.exportPicked.has(f.id));
@@ -1322,22 +1356,31 @@ function viewSettings() {
       ${row("Month column", "How the Month column is written.", `<select class="select" data-set="month_format">${[["name", "September"], ["short", "Sep"], ["name_year", "September 2026"], ["iso", "2026-09"], ["number", "9"]].map(([v, l]) => `<option value="${v}" ${s.month_format === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
     </div></section>
     <section class="panel"><div class="panel-head"><h2>Reading forms</h2></div><div class="panel-body">
-      ${row("AF 174 commander block", "Whose signature the Commander's Comments block on an AF 174 counts as.", `<select class="select" data-set="f174_commander_role">${[["cadet_sqcc_signed", "Cadet SQ/CC"], ["aoc_signed", "AOC/AMT"], ["none", "Neither"]].map(([v, l]) => `<option value="${v}" ${s.f174_commander_role === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+      ${row("AF 174 commander block", "Whether the Commander's Comments block on an AF 174 counts as the AOC/AMT signature.", `<select class="select" data-set="f174_commander_role">${[["aoc_signed", "Counts as AOC/AMT"], ["none", "Doesn't count"]].map(([v, l]) => `<option value="${v}" ${s.f174_commander_role === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
       ${row("Position tolerance", "A field counts as matching the template when every edge is within this many points (1 pt ≈ 1 px at 72 dpi). Changing it re-reads every form.", `<input class="input" type="number" min="2" max="40" step="1" data-set="position_tolerance_pt" value="${esc(s.position_tolerance_pt)}">`)}
     </div></section>
+    <section class="panel"><div class="panel-head"><h2>Updates</h2></div><div class="panel-body" id="updBody"></div></section>
     <section class="panel"><div class="panel-head"><h2>Start over</h2></div><div class="panel-body">
       ${row("Clear metadata and rescan", "Forgets everything closet has recorded and reads every PDF in the dump folder again from scratch. This erases your edits, reviews, signatures set by hand, archive choices, and “logged” marks. Settings are kept, and the PDFs themselves are never touched.",
         `<button class="btn" type="button" id="resetAll" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("refresh")}Clear metadata and rescan</button>`)}
     </div></section>
     <section class="panel"><div class="panel-head"><h2>Folders</h2></div><div class="panel-body">
-      ${row("Dump folder", "Put every PDF here and leave it there. Nothing is ever moved or changed. You can also drag PDFs onto the window.",
+      ${row("Dump folder", "Where closet keeps your paperwork. By default it's inside the app's data folder, so you never need to open it: add PDFs with Add files or by dragging them onto the window. Nothing is ever moved or changed.",
         `<div class="path">${esc(S.data.dump_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="dumpOpen">${icon("folder")}Open</button><button class="btn small" type="button" id="dumpChoose">Change…</button></div>`)}
+      ${row("Quick dump folder", "Where Quick dump writes its sorted folders and the AOC/AMT print packet. Copies only; each run refreshes the five step folders.",
+        `<div class="path">${esc(S.data.quick_dump_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="quickOpen">${icon("folder")}Open</button><button class="btn small" type="button" id="quickChoose">Change…</button></div>`)}
       ${row("Metadata folder", "Cached reads, page images, and your edits. It sits next to the dump folder; back both up together.",
         `<div class="path">${esc(S.data.meta_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="metaOpen">${icon("folder")}Open</button></div>`)}
       ${row("Templates", "The blank AFCW Form 10 and AF Form 174 every form is compared against. They're built into the app.", `<div class="path">Built in</div>`)}
     </div></section></div>`;
+  closet.updates.state().then(renderUpdates);
   $("#dumpOpen").onclick = () => closet.openFolder("dump");
   $("#metaOpen").onclick = () => closet.openFolder("meta");
+  $("#quickOpen").onclick = () => closet.openFolder("quickdump");
+  $("#quickChoose").onclick = async () => {
+    const dir = await closet.chooseQuickDumpFolder();
+    if (dir) { toast(`Quick dump will use ${dir}`); await load(); }
+  };
   $("#dumpChoose").onclick = chooseDump;
   $("#resetAll").onclick = async () => {
     const all = (S.data.forms || []).filter((f) => !f.missing);
@@ -1377,11 +1420,115 @@ function viewSettings() {
   }));
 }
 
+// ------------------------------------------------------------------ updates
+// The main process owns the schedule; this only shows its state (Settings → Updates) and says so
+// once when a downloaded update is waiting.
+let lastUpdateStatus = null;
+function updateLine(u) {
+  if (!u.supported) return u.reason;
+  return {
+    idle: "Not checked yet this session.",
+    checking: "Checking for updates…",
+    downloading: `Version ${u.latest} found. Downloading (${u.percent}%)…`,
+    ready: `Version ${u.latest} is downloaded. It installs when you close closet, or now with the button.`,
+    current: "You're up to date.",
+    error: `Couldn't check for updates: ${u.error}`,
+  }[u.status] || "";
+}
+function renderUpdates(u) {
+  const host = $("#updBody");
+  if (!host) return;
+  const row = (title, desc, control) => `<div class="set-row"><div><h3>${title}</h3><p>${desc}</p></div><div>${control}</div></div>`;
+  const busy = ["checking", "downloading"].includes(u.status);
+  const btns = u.supported
+    ? (u.status === "ready" ? `<button class="btn small primary" type="button" id="updInstall">Restart and install</button>` : `<button class="btn small" type="button" id="updCheck" ${busy ? "disabled" : ""}>${icon("refresh")}Check now</button>`)
+    : `<button class="btn small" type="button" id="updReleases">Open releases page</button>`;
+  host.innerHTML =
+    row("Version", `closet ${esc(u.version)}. ${esc(updateLine(u))}`, `<div class="pair">${btns}</div>`) +
+    (u.supported ? row("Automatic updates", "Checks GitHub for a newer release when closet starts and every few hours, downloads it in the background, and installs it when you close the app.",
+      `<select class="select" id="updAuto"><option value="1" ${u.auto ? "selected" : ""}>On</option><option value="0" ${u.auto ? "" : "selected"}>Off (check manually)</option></select>`) : "");
+  const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+  on("#updCheck", () => closet.updates.check().then(renderUpdates));
+  on("#updInstall", async () => { if (await okToDiscard()) closet.updates.install(); });
+  on("#updReleases", () => closet.updates.openReleases());
+  const auto = $("#updAuto");
+  if (auto) auto.onchange = () => closet.updates.setAuto(auto.value === "1").then(renderUpdates);
+}
+closet.updates.onStatus((u) => {
+  renderUpdates(u);
+  if (u.status === "ready" && lastUpdateStatus !== "ready") toast(`closet ${u.latest} is ready. It installs when you close the app.`);
+  lastUpdateStatus = u.status;
+});
+
 // ------------------------------------------------------------------ desktop niceties
 async function chooseDump() {
   if (!(await okToDiscard())) return;
   const r = await closet.chooseDumpFolder();
   if (r) toast(`Using ${r.dump}`);
+}
+
+// Pick PDFs from anywhere and add them to the dump folder without copying by hand. A name that's
+// already in the dump folder pauses for a same-paperwork check instead of silently renaming.
+async function bulkUpload() {
+  const paths = await closet.pickUploadFiles();
+  if (!paths.length) return;
+  let res;
+  try {
+    res = await api("/api/upload/stage", { method: "POST", body: { paths } });
+  } catch (e) { toast("Couldn't add those files: " + e.message, true); return; }
+  let added = res.added.length;
+  for (const c of res.conflicts) {
+    const choice = await ask({
+      title: `“${c.name}” is already in the dump folder`,
+      message: "Is this an updated copy of the same paperwork &mdash; for example, the same form scanned back in now that it's signed?",
+      choices: [
+        { label: "Skip it", value: "skip" },
+        { label: "Different form, keep both", value: "keep-both" },
+        { label: "Same form, use this copy", value: "replace", primary: true },
+      ],
+    });
+    if (choice === null || choice === "skip") continue;
+    try {
+      const r = await api("/api/upload/resolve", { method: "POST", body: { name: c.name, src: c.src, action: choice } });
+      if (r.name) added++;
+    } catch (e) { toast(`Couldn't add ${c.name}: ${e.message}`, true); }
+  }
+  if (added) toast(`Added ${plural(added, "PDF")} to the dump folder`);
+  else toast("Nothing was added");
+  await load();
+}
+
+// Copy every active form still missing a chosen signature into a folder the user picks.
+async function bulkDownloadBySignature() {
+  const key = await ask({
+    title: "Download paperwork missing a signature",
+    message: "Every form still awaiting the chosen signature will be copied into a folder you pick next.",
+    select: { options: FLAGS.map(([k, , long]) => [k, long]), value: FLAGS[0][0] },
+    choices: [{ label: "Cancel", value: null }, { label: "Choose folder…", value: true, primary: true }],
+  });
+  if (!key) return;
+  const [, , long] = FLAGS.find(([k]) => k === key) || [];
+  const ids = active().filter((f) => f.parsed && f.record[key] === false).map((f) => f.id);
+  if (!ids.length) { toast(`Nothing is awaiting: ${long}`, true); return; }
+  const r = await closet.bulkDownload(ids);
+  if (r?.ok) toast(`Downloaded ${plural(r.count, "PDF")} to ${r.dir}`);
+  else if (r?.error) toast(r.error, true);
+}
+
+// Sort copies of every active form into "Quick dump" inside the dump folder, by first open step.
+async function quickDump() {
+  const btn = $("#quickDump");
+  btn.disabled = true;
+  try {
+    const r = await api("/api/quick-dump", { method: "POST" });
+    const parts = r.folders.filter((x) => x.count).map((x) => `${x.count} in ${x.name}`);
+    toast(`${parts.join(", ") || "No forms to sort"}${r.skipped ? ` (${r.skipped} still being read, skipped)` : ""}`);
+    closet.openFolder("quickdump");
+  } catch (e) {
+    toast("Quick dump failed: " + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Drag PDFs onto the window: they're copied (never moved) into the dump folder.

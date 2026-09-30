@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Store } from "../core/store.js";
+import { createUpdater, RELEASES_URL } from "./updater.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const RENDERER = path.join(ROOT, "src", "renderer");
@@ -19,14 +20,19 @@ const ICON = path.join(ROOT, "resources", process.platform === "win32" ? "icon.i
 
 // ---------------------------------------------------------------------------- app config
 // Where the data lives is per-computer (userData/config.json); everything about the paperwork
-// lives in the metadata folder next to the dump folder, so the two travel together.
+// lives in the metadata folder next to the dump folder, so the two travel together. New installs
+// keep both inside the app's data folder (per-OS via Electron), out of the way of casual edits;
+// the quick-dump output folder is the one place meant to be opened, so it defaults to Documents.
 
 const CONFIG = () => path.join(app.getPath("userData"), "config.json");
 let config = {};
 
+const defaultQuickDumpDir = () => path.join(app.getPath("documents"), "closet", "quick dump");
+
 function loadConfig() {
   if (process.env.CLOSET_DUMP) {
-    config = { dumpDir: process.env.CLOSET_DUMP }; // tests / portable use: don't touch saved settings
+    // tests / portable use: don't touch saved settings
+    config = { dumpDir: process.env.CLOSET_DUMP, quickDumpDir: process.env.CLOSET_QUICKDUMP || path.join(path.dirname(path.resolve(process.env.CLOSET_DUMP)), "quick dump") };
     return;
   }
   try {
@@ -39,7 +45,12 @@ function loadConfig() {
       config = {};
     }
   }
-  if (!config.dumpDir) config.dumpDir = path.join(app.getPath("documents"), "closet", "dump");
+  if (!config.dumpDir) {
+    // an older build's default location wins if it's already there, so nobody's paperwork "disappears"
+    const legacy = path.join(app.getPath("documents"), "closet", "dump");
+    config.dumpDir = fs.existsSync(legacy) ? legacy : path.join(app.getPath("userData"), "dump");
+  }
+  if (!config.quickDumpDir) config.quickDumpDir = defaultQuickDumpDir();
   saveConfig();
 }
 
@@ -54,6 +65,7 @@ const metaDirFor = (dumpDir) => path.join(path.dirname(path.resolve(dumpDir)), "
 // ---------------------------------------------------------------------------- store
 let store = null;
 let win = null;
+let updater = null;
 
 async function openStore() {
   if (store) await store.close();
@@ -68,8 +80,9 @@ async function route(method, url, body) {
   const q = new URLSearchParams(qs || "");
   const m = (re) => re.exec(p);
   let x;
-  if (method === "GET" && p === "/api/state") return store.snapshot();
+  if (method === "GET" && p === "/api/state") return { ...store.snapshot(), quick_dump_dir: config.quickDumpDir };
   if (method === "GET" && p === "/api/version") return { version: store.version, status: { ...store.status, queued: store.queue.length + store.inFlight.size } };
+  if (method === "POST" && p === "/api/quick-dump") return store.quickDump(config.quickDumpDir);
   if (method === "POST" && p === "/api/scan") return { ...store.scan(), version: store.version };
   if (method === "POST" && p === "/api/reset") {
     if (body?.confirm !== "clear") throw new Error("Missing confirmation");
@@ -86,6 +99,14 @@ async function route(method, url, body) {
   if (method === "POST" && p === "/api/forms/bulk") {
     for (const id of body?.ids || []) store.updateForm(id, body.patch || {});
     return { updated: (body?.ids || []).length, version: store.version };
+  }
+  if (method === "POST" && p === "/api/upload/stage") {
+    return { ...store.stageFiles((body?.paths || []).filter((x) => typeof x === "string")), version: store.version };
+  }
+  if (method === "POST" && p === "/api/upload/resolve") {
+    if (!body?.name || !body?.src || !body?.action) throw new Error("Missing name/src/action");
+    const name = store.resolveConflict(body.name, body.src, body.action);
+    return { name, version: store.version };
   }
   if ((x = m(/^\/api\/forms\/([0-9a-f]+)\/reparse$/)) && method === "POST") {
     store.reparse(x[1]);
@@ -123,7 +144,22 @@ function registerIpc() {
     const f = store.pdfPath(id);
     if (f) shell.showItemInFolder(f);
   });
-  ipcMain.handle("closet:open-folder", (_e, which) => shell.openPath(which === "meta" ? store.meta : store.dump));
+  ipcMain.handle("closet:open-folder", (_e, which) => {
+    if (which === "quickdump") fs.mkdirSync(config.quickDumpDir, { recursive: true });
+    return shell.openPath(which === "meta" ? store.meta : which === "quickdump" ? config.quickDumpDir : store.dump);
+  });
+  ipcMain.handle("closet:choose-quick-dump", async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: "Choose the quick dump folder",
+      message: "Quick dump writes its sorted folders and print packet here.",
+      defaultPath: config.quickDumpDir,
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    config.quickDumpDir = r.filePaths[0];
+    saveConfig();
+    return config.quickDumpDir;
+  });
   ipcMain.handle("closet:choose-dump", async () => {
     const r = await dialog.showOpenDialog(win, {
       title: "Choose the dump folder",
@@ -138,7 +174,78 @@ function registerIpc() {
     return { dump: store.dump, meta: store.meta };
   });
   ipcMain.handle("closet:add-files", (_e, paths) => store.addFiles((paths || []).filter((p) => typeof p === "string")));
+  ipcMain.handle("closet:update-state", () => updater.state());
+  ipcMain.handle("closet:update-check", () => { updater.check(); return updater.state(); });
+  ipcMain.handle("closet:update-install", () => updater.install());
+  ipcMain.handle("closet:update-auto", (_e, on) => {
+    config.autoUpdate = Boolean(on);
+    saveConfig();
+    if (config.autoUpdate) updater.check();
+    updater.notify();
+    return updater.state();
+  });
+  ipcMain.handle("closet:open-releases", () => shell.openExternal(RELEASES_URL));
   ipcMain.handle("closet:info", () => ({ version: app.getVersion(), platform: process.platform }));
+
+  // ---------------------------------------------------------------- file-system dialogs
+  ipcMain.handle("closet:download-pdf", async (_e, id) => {
+    const src = store.pdfPath(id);
+    if (!src) return { ok: false, error: "That PDF is no longer in the dump folder." };
+    const r = await dialog.showSaveDialog(win, {
+      title: "Save a copy of this paperwork", defaultPath: path.basename(src),
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false };
+    try {
+      fs.copyFileSync(src, r.filePath);
+      return { ok: true, path: r.filePath };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:upload-replacement", async (_e, id) => {
+    if (!store.pdfPath(id)) return { ok: false, error: "That PDF is no longer in the dump folder." };
+    const r = await dialog.showOpenDialog(win, {
+      title: "Choose the updated copy", message: "Pick the newer (e.g. signed) PDF for this same form.",
+      filters: [{ name: "PDF", extensions: ["pdf"] }], properties: ["openFile"],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false };
+    try {
+      store.replaceFile(id, r.filePaths[0]);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:pick-upload-files", async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: "Add paperwork to the dump folder",
+      filters: [{ name: "PDF", extensions: ["pdf"] }], properties: ["openFile", "multiSelections"],
+    });
+    return r.canceled ? [] : r.filePaths;
+  });
+  ipcMain.handle("closet:bulk-download", async (_e, ids) => {
+    const files = (ids || []).map((id) => ({ id, src: store.pdfPath(id) })).filter((x) => x.src);
+    if (!files.length) return { ok: false, error: "Nothing to download." };
+    const r = await dialog.showOpenDialog(win, {
+      title: "Choose a folder for the downloaded paperwork",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false };
+    const dest = r.filePaths[0];
+    let count = 0;
+    for (const { src } of files) {
+      const base = path.basename(src);
+      const stem = base.replace(/\.pdf$/i, "");
+      let name = base;
+      for (let i = 2; fs.existsSync(path.join(dest, name)); i++) name = `${stem} (${i}).pdf`;
+      try {
+        fs.copyFileSync(src, path.join(dest, name));
+        count++;
+      } catch { /* one bad file shouldn't stop the rest */ }
+    }
+    return { ok: true, dir: dest, count };
+  });
 }
 
 // ---------------------------------------------------------------------------- closet:// scheme
@@ -246,10 +353,12 @@ if (!app.requestSingleInstanceLock()) {
     app.setAppUserModelId("com.esak.thecloset");
     loadConfig();
     registerScheme();
+    updater = createUpdater({ isAuto: () => config.autoUpdate !== false, onState: (st) => win?.webContents.send("closet:update-status", st) });
     registerIpc();
     buildMenu();
     await openStore();
     createWindow();
+    updater.start();
     app.on("activate", () => {
       if (!BrowserWindow.getAllWindows().length) createWindow();
     });

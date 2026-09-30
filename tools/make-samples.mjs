@@ -268,3 +268,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   await makeSamples(path.resolve(process.argv[2]));
   console.log(`wrote 9 sample forms to ${path.resolve(process.argv[2])}`);
 }
+
+// shared with tools/make-demo.mjs
+export { F10, F174, widgetRects, fill, squiggle, load, scanPages };

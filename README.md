@@ -20,11 +20,25 @@ Download the installer for your system (from the landing page or the repository'
 
 ## Using it
 
-On first launch closet uses `Documents/closet/dump` for paperwork, with its `metadata`
-folder next to it. Pick a different dump folder in **Settings → Folders**. An existing
-`dump`/`metadata` pair from an earlier version carries straight over, edits included. PDFs are
-never moved or changed. You can also drag PDFs onto the window, which copies them into the dump
-folder.
+On a new install closet keeps paperwork in a `dump` folder (with its `metadata` folder next to it)
+inside the app's data folder (`%APPDATA%\closet` on Windows, `~/Library/Application Support/closet`
+on macOS, `~/.config/closet` on Linux), so there's no reason to open it: add PDFs with **Add files**
+or by dragging them on. You can view or change it in **Settings → Folders**. An existing
+`dump`/`metadata` pair from an earlier version keeps working, edits included.
+
+**Quick dump** (Paperwork page) copies every active form into five folders by the first routing
+step it's still waiting on (the last is fully complete), and puts a print-ready packet with an
+index sheet in the AOC/AMT folder. Output goes to the *Quick dump folder* in Settings → Folders
+(default `Documents/closet/quick dump`). PDFs are
+never moved or changed. You can also drag PDFs onto the window, or click **Add files** in
+Paperwork, to copy them into the dump folder. If a name you're adding is already there, closet
+asks whether it's an updated copy of the same paperwork (say, scanned back in now that it's
+signed) or a different form — no need to sort that out by hand first.
+
+Open any form and use **Download** to save a copy of its PDF elsewhere, or **Upload updated
+copy** to replace it with a newer one (same filename, so your edits and signatures stay put).
+**Download by signature** in Paperwork copies every form still awaiting a chosen signature into a
+folder you pick, for printing or routing a batch at once.
 
 ### Naming paperwork
 
@@ -46,8 +60,9 @@ type** against the blank templates built into the app:
 4. Scans are aligned to the template, and ink the blank template doesn't have shows which boxes and
    signatures are filled.
 
-Routing is tracked in four steps: **SQ/CCF processed → Cadet SQ/CC → Recipient → AOC/AMT**. Any
-step can be recorded by hand when someone signs later.
+Routing is tracked in four steps: **SQ/CCF processed → Cadet Commander → Recipient → AOC/AMT**
+(the AF 174 has no Cadet Commander box, so that step shows as n/a there). Any step can be
+recorded by hand when someone signs later.
 
 ### The rules
 
@@ -93,6 +108,8 @@ npm start            # run the app
 npm test             # unit + engine tests on generated sample forms
 npm run test:e2e     # drive the real app window with Playwright
 npm run dist         # build installers for this system into dist/
+npm run demo -- <folder>   # a made-up squadron's worth of paperwork, for screenshots
+npm run shots        # re-take the landing page's screenshots (site/*.webp) from the real app
 ```
 
 `npm run samples -- <folder>` writes realistic sample paperwork with made-up names: fillable,
@@ -101,6 +118,15 @@ it at a real dump folder.
 
 Installers for every platform are built by GitHub Actions (`.github/workflows/build.yml`): run it
 from the Actions tab, or push a `v*` tag to publish a release.
+
+**Automatic updates.** The installed app checks this repo's latest GitHub release shortly after it
+starts and every six hours, downloads a newer one in the background, and installs it when the app
+is closed (or on **Settings → Updates → Restart and install**). It can be switched off there. To
+ship an update: bump `version` in `package.json`, commit, then push a tag with the same number
+(`v2.1.0`); CI refuses a tag that doesn't match. The release must be public and published (not a
+draft) and carries `latest.yml`/`latest-linux.yml` beside the installers. Windows (installer) and
+Linux (AppImage) update themselves; the portable build, the `.deb`, and macOS don't (macOS needs a
+signed app), and Settings links to the releases page instead.
 
 ### Layout
 

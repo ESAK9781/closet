@@ -97,27 +97,29 @@ export const FORM_TYPES = {
   },
 };
 
-// The four routing checks the first sergeant tracks. Each maps to the slot(s) whose presence of
-// ink/text means "done" for that form type. A flag with no slot can only be set by hand.
+// The four routing checks the first sergeant tracks, in the order the paperwork travels. Each maps
+// to the slot(s) whose presence of ink/text means "done" for that form type. A flag with no slot
+// can only be set by hand (F174s have no cadet-commander box: it shows as n/a there).
+// [key, label, short name used for the quick-dump folder of forms waiting on this step]
 export const FLAG_DEFS = [
-  ["sqccf_processed", "Processed by SQ/CCF"],
-  ["cadet_sqcc_signed", "Signed by Cadet SQ/CC"],
-  ["recipient_signed", "Signed by recipient"],
-  ["aoc_signed", "Signed by AOC/AMT"],
+  ["sqccf_processed", "Processed by SQ/CCF", "SQ-CCF processing"],
+  ["cadet_cc_initialed", "Initialed by Cadet Commander", "Cadet Commander initials"],
+  ["recipient_signed", "Signed by recipient", "Recipient signature"],
+  ["aoc_signed", "Signed by AOC/AMT", "AOC-AMT signature"],
 ];
 
 const FLAG_SLOTS = {
   F10: {
     sqccf_processed: ["sqccf_initials", "login_date"],
-    cadet_sqcc_signed: ["cadet_sqcc_initials"],
+    cadet_cc_initialed: ["cadet_sqcc_initials"], // section V, box 3 "CADET COMMANDER"
     recipient_signed: ["sig_recipient"],
     aoc_signed: ["sig_aoc"],
   },
   F174: {
     sqccf_processed: [],
-    cadet_sqcc_signed: [], // filled from settings: which role the commander block represents
+    cadet_cc_initialed: [],
     recipient_signed: ["sig_recipient"],
-    aoc_signed: [],
+    aoc_signed: [], // filled from settings: whether the commander block counts as this
   },
 };
 
@@ -125,7 +127,7 @@ export function flagSlots(formType, settings) {
   const base = FLAG_SLOTS[formType] || {};
   const out = Object.fromEntries(Object.entries(base).map(([k, v]) => [k, [...v]]));
   if (formType === "F174") {
-    const role = settings.f174_commander_role || "cadet_sqcc_signed";
+    const role = settings.f174_commander_role || "aoc_signed";
     if (role in out) out[role] = ["sig_commander"];
   }
   return out;
