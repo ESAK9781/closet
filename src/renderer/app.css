@@ -57,7 +57,7 @@ a { color: inherit; }
   border-right: 1px solid var(--line-soft);
 }
 .brand { display: flex; align-items: center; gap: 11px; text-decoration: none; padding: 4px 10px 24px; color: var(--brass); }
-.brand-mark { width: 26px; height: 26px; flex: none; }
+.brand-mark { width: 28px; height: 28px; flex: none; border-radius: 7px; }
 .brand-word {
   font-stretch: 125%; font-weight: 800; font-size: 19px; letter-spacing: -.01em; color: var(--text);
   white-space: nowrap;

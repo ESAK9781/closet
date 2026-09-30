@@ -23,6 +23,7 @@ dump folder are read-only from the app's point of view: never moved, never modif
 | `src/core/templates.js` | The *meaning* of each template field (semantic key, label, section) and the routing-flag definitions |
 | `src/core/pool.js`, `worker.js`, `extract.js`, `imaging.js`, `assignment.js` | The pdf.js-based parser: template matching, field extraction, worker-thread pool |
 | `src/renderer/` | The whole UI: `app.js` (~1500 lines, no build step, no framework), `app.css`, `index.html` |
+| `resources/logo/` | The master logo. `npm run icons` builds every icon size from it (installer, window, site, sidebar) |
 | `resources/templates/` | The two blank template PDFs everything is compared against |
 | `test/` | `engine.test.mjs` and `records.test.mjs` run against generated sample forms; `test/e2e/` drives the real app with Playwright |
 | `tools/make-samples.mjs` | Generates realistic fake paperwork for tests — **never point it at a real dump folder** |

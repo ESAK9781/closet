@@ -19,6 +19,7 @@
     "samples": "node tools/make-samples.mjs",
     "demo": "node tools/make-demo.mjs",
     "shots": "node tools/make-site-shots.mjs",
+    "icons": "node tools/make-icons.mjs",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",

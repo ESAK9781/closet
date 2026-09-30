@@ -9,6 +9,7 @@
   <meta property="og:title" content="closet: every Form 10 and 174, and where it's stuck">
   <meta property="og:description" content="A desktop app for the first sergeant. Reads the paperwork, tracks the signatures, and fills in the Conduct Log.">
   <meta property="og:image" content="https://esak9781.github.io/closet/site/overview.webp">
+  <link rel="apple-touch-icon" href="site/icon.png">
   <link rel="icon" href="site/icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -35,7 +36,7 @@
     header.top { position: sticky; top: 0; z-index: 10; background: rgba(233, 237, 242, .88); backdrop-filter: blur(10px); border-bottom: 1px solid var(--rule); }
     header.top .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
     .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--brass); }
-    .brand svg { width: 24px; height: 24px; }
+    .brand img { width: 30px; height: 30px; border-radius: 7px; }
     .brand span { color: var(--ink); font-stretch: 100%; font-weight: 800; font-size: 20px; letter-spacing: -.02em; }
     header.top nav { margin-left: auto; display: flex; gap: 26px; align-items: center; font-size: 15px; }
     header.top nav a { text-decoration: none; color: var(--ink-2); }
@@ -173,7 +174,7 @@
   <header class="top">
     <div class="wrap">
       <a class="brand" href="#" aria-label="closet, back to top">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 29 16 16 29 3 16Z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M16 10 22 16 16 22 10 16Z" fill="currentColor"/></svg>
+        <img src="site/icon.png" width="30" height="30" alt="">
         <span>closet</span>
       </a>
       <nav aria-label="Page">
