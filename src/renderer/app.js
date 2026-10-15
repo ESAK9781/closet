@@ -1485,6 +1485,12 @@ function viewSettings() {
       ${row("Position tolerance", "A field counts as matching the template when every edge is within this many points (1 pt ≈ 1 px at 72 dpi). Changing it re-reads every form.", `<input class="input" type="number" min="2" max="40" step="1" data-set="position_tolerance_pt" value="${esc(s.position_tolerance_pt)}">`)}
     </div></section>
     <section class="panel"><div class="panel-head"><h2>Updates</h2></div><div class="panel-body" id="updBody"></div></section>
+    <section class="panel"><div class="panel-head"><h2>Backup and restore</h2><span class="sub">before trying something risky</span></div><div class="panel-body">
+      ${row("Export a backup", "Saves everything into one zip file: every PDF in the dump folder, your edits, reviews, name answers, settings, sync state, and the originals closet kept when it edited a PDF. Page images are left out (they're rebuilt).",
+        `<button class="btn" type="button" id="backupExport">${icon("download")}Export backup…</button>`)}
+      ${row("Restore from a backup", "Replaces the PDFs in the dump folder and everything in the metadata folder with what's in a backup file. The backup is checked first, and what you have now is saved to a safety backup before anything is replaced.",
+        `<button class="btn" type="button" id="backupImport" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("upload")}Import backup…</button>`)}
+    </div></section>
     <section class="panel"><div class="panel-head"><h2>Start over</h2></div><div class="panel-body">
       ${row("Clear metadata and rescan", "Forgets everything closet has recorded and reads every PDF in the dump folder again from scratch. This erases your edits, reviews, signatures set by hand, archive choices, and “logged” marks. Settings are kept, and the PDFs themselves are never touched.",
         `<button class="btn" type="button" id="resetAll" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("refresh")}Clear metadata and rescan</button>`)}
@@ -1534,6 +1540,8 @@ function viewSettings() {
     if (r?.ok) { toast("Folder cleared. That step is skipped now."); await load(); } else if (r?.error) toast(r.error, true);
   }));
   $("#dumpChoose").onclick = chooseDump;
+  $("#backupExport").onclick = exportBackup;
+  $("#backupImport").onclick = importBackup;
   $("#resetAll").onclick = async () => {
     const all = (S.data.forms || []).filter((f) => !f.missing);
     const n = all.length;
@@ -1570,6 +1578,59 @@ function viewSettings() {
       await load();
     } catch (e) { toast("Couldn't save: " + e.message, true); }
   }));
+}
+
+// ------------------------------------------------------------------ backup and restore
+const fmtBytes = (n) => (n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+async function exportBackup() {
+  const btn = $("#backupExport");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await closet.exportBackup();
+    if (r?.ok) {
+      toast(`Backup saved: ${plural(r.pdfs, "PDF")}, ${plural(r.forms, "record")}, ${fmtBytes(r.bytes)}`);
+      closet.showPath(r.path);
+    } else if (r?.error) toast("Couldn't save the backup: " + r.error, true);
+  } catch (e) {
+    toast("Couldn't save the backup: " + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function importBackup() {
+  if (!(await okToDiscard())) return;
+  const pick = await closet.pickBackup();
+  if (!pick?.ok) {
+    if (pick?.error) await ask({ title: "That backup can't be restored", message: `<p>${esc(pick.error)}</p><p class="dim">Nothing was changed.</p>`, choices: [{ label: "OK", value: true, primary: true }] });
+    return;
+  }
+  const now = (S.data?.forms || []).filter((f) => !f.missing).length;
+  const ok = await ask({
+    title: "Replace everything with this backup?",
+    message: `<p>This backup was made ${esc(fmtStamp(pick.created_at))}${pick.app_version ? ` by closet ${esc(pick.app_version)}` : ""}. It holds <b>${plural(pick.pdfs, "PDF")}</b> and <b>${plural(pick.forms, "form record")}</b> (${fmtBytes(pick.size)}), and was checked and is intact.</p>
+      <p>Right now closet has ${plural(now, "form")}. Restoring replaces the PDFs in the dump folder and all your edits, reviews, and settings with the backup's. PDFs in the dump folder that aren't in the backup are removed.</p>
+      <p class="dim">What you have now is saved first as a safety backup in <span class="mono">${esc(pick.safety_dir)}</span>, and put back if the restore fails part-way.</p>`,
+    choices: [{ label: "Cancel", value: null }, { label: "Replace with this backup", value: true, primary: true }], danger: true, wide: true,
+  });
+  if (!ok) return;
+  toast("Restoring…");
+  const r = await closet.importBackup(pick.path);
+  if (!r?.ok) {
+    await ask({ title: "The restore failed", message: `<p>${esc(r?.error || "Unknown error")}</p>`, choices: [{ label: "OK", value: true, primary: true }], danger: true });
+    await load();
+    return;
+  }
+  closeDetail();
+  S.reviewId = null;
+  S.exportPicked.clear();
+  await load();
+  await ask({
+    title: "Backup restored",
+    message: `<p>${plural(r.pdfs, "PDF")} and ${plural(r.forms, "record")} restored. closet is checking the files again in the background.</p><p class="dim">Your previous data is saved at <span class="mono">${esc(r.safety)}</span>. It's a normal backup: restore it the same way to go back.</p>`,
+    choices: [{ label: "OK", value: true, primary: true }],
+  });
 }
 
 // ------------------------------------------------------------------ updates

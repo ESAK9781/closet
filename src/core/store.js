@@ -299,7 +299,8 @@ export class Store extends EventEmitter {
         m.missing = false;
         changed = true;
       }
-      const stale = m.size !== st.size || m.mtime !== st.mtimeMs / 1000 || m.parser_version !== PARSER_VERSION || !m.analysis;
+      // tolerance on the time: a restored backup's modified times differ by float noise
+      const stale = m.size !== st.size || !(Math.abs(m.mtime - st.mtimeMs / 1000) < 0.002) || m.parser_version !== PARSER_VERSION || !m.analysis;
       if (stale && !this.queue.includes(id) && !this.inFlight.has(id)) this.queue.push(id);
     }
     for (const [id, m] of this.metas) {

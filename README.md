@@ -71,6 +71,17 @@ approved but sends no signed copy. It removes the empty signature box, stamps th
 ("Marked AOC/AMT approved by First Sergeant (unofficial)", "AOC/AMT Approved"), fills the commander
 date on an AF 174, and marks the step done. It's a one-form-at-a-time action by design.
 
+### Backup and restore
+
+**Settings → Backup and restore → Export backup** saves everything into one ordinary `.zip`: every
+PDF in the dump folder, the whole metadata folder (edits, reviews, name answers, settings, sync
+state, `backups/`), and the per-computer settings that matter. Page images are left out (rebuilt).
+**Import backup** replaces the dump folder's PDFs and the metadata folder with a backup's. The file
+is read and checked in full first (a damaged or foreign zip is refused with nothing touched); your
+current data is then saved as `before-restore-<time>.zip` in closet's data folder (`backups/`), and
+put back automatically if the restore fails part-way. Other files and subfolders in the dump folder
+are left alone. Take a backup before trying anything risky.
+
 ### Finding forms
 
 The Paperwork list filters by form type, Pos/Neg, **next step needed**, **attention** (review /

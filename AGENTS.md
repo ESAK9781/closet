@@ -20,6 +20,7 @@ dump folder are never moved, and only changed by the few explicit actions listed
 | `src/main/preload.cjs` | The only bridge into the renderer — a small explicit `window.closet` API, no Node in the page |
 | `src/core/store.js` | The metadata store: scanning, the parser-thread queue, settings, edits, file add/replace |
 | `src/core/sync.js` | Sync mode: pull / match / clear / push over per-step folders; the ledger that guarantees only closet's own files are ever deleted |
+| `src/core/backup.js` | Backup/restore as a hand-written zip: verify first, safety backup, rollback on failure; paths are validated so a backup can only write into the dump/metadata folders |
 | `src/core/signable.js` | PDF structure checks ("can Adobe sign here?") and edits as incremental updates: `addField`, `fillSlots`, `approveAoc` |
 | `src/core/records.js` | Pure functions turning raw slot values + overrides into tracker records and sheet rows |
 | `src/core/templates.js` | The *meaning* of each template field (semantic key, label, section) and the routing-flag definitions |

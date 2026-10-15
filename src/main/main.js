@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { createBackup, restoreBackup, verifyBackup } from "../core/backup.js";
 import { Store } from "../core/store.js";
 import { createUpdater, RELEASES_URL } from "./updater.js";
 
@@ -76,6 +77,7 @@ async function openStore() {
 
 /** The REST-style routes the UI uses, served over IPC. */
 async function route(method, url, body) {
+  if (!store) throw new Error("closet is busy restoring a backup. Try again in a moment.");
   const [p, qs] = url.split("?");
   const q = new URLSearchParams(qs || "");
   const m = (re) => re.exec(p);
@@ -202,6 +204,62 @@ function registerIpc() {
   });
   ipcMain.handle("closet:open-path", (_e, p) => {
     if (typeof p === "string" && path.isAbsolute(p) && fs.existsSync(p)) shell.showItemInFolder(p);
+  });
+  // ---------------------------------------------------------------- backup and restore
+  const stampNow = () => new Date().toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  const insideOf = (base, p) => {
+    const rel = path.relative(path.resolve(base), path.resolve(p));
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  };
+  ipcMain.handle("closet:export-backup", async () => {
+    const r = await dialog.showSaveDialog(win, {
+      title: "Save a backup of closet",
+      defaultPath: path.join(app.getPath("documents"), `closet-backup-${stampNow()}.zip`),
+      filters: [{ name: "closet backup (zip)", extensions: ["zip"] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false };
+    try {
+      if (insideOf(store.meta, r.filePath)) throw new Error("Choose a place outside closet's metadata folder for the backup.");
+      await store.whenIdle().catch(() => {});
+      return { ok: true, ...createBackup({ dump: store.dump, meta: store.meta, config, appVersion: app.getVersion(), out: r.filePath }) };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:pick-backup", async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: "Choose a closet backup to restore", filters: [{ name: "closet backup (zip)", extensions: ["zip"] }], properties: ["openFile"],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false };
+    try {
+      const { manifest } = verifyBackup(r.filePaths[0]); // reads and checks the whole file before anything is offered
+      return {
+        ok: true, path: r.filePaths[0], safety_dir: path.join(app.getPath("userData"), "backups"),
+        created_at: manifest.created_at, app_version: manifest.app_version, pdfs: manifest.pdfs, forms: manifest.forms, size: fs.statSync(r.filePaths[0]).size,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e), bad: true };
+    }
+  });
+  ipcMain.handle("closet:import-backup", async (_e, file) => {
+    if (typeof file !== "string") return { ok: false, error: "No backup chosen" };
+    const safety = path.join(app.getPath("userData"), "backups", `before-restore-${stampNow()}.zip`);
+    const old = store;
+    store = null; // the UI gets "busy" instead of touching files while they're replaced
+    let result;
+    try {
+      await old.close();
+      result = restoreBackup(file, { dump: old.dump, meta: old.meta, safety, appVersion: app.getVersion() });
+      const c = result.config || {};
+      if (typeof c.autoUpdate === "boolean") config.autoUpdate = c.autoUpdate;
+      if (typeof c.quickDumpDir === "string" && fs.existsSync(path.dirname(c.quickDumpDir))) config.quickDumpDir = c.quickDumpDir;
+      saveConfig();
+    } catch (e) {
+      await openStore();
+      return { ok: false, error: String(e?.message || e) };
+    }
+    await openStore();
+    return { ok: true, safety: result.safety, pdfs: result.manifest.pdfs, forms: result.manifest.forms };
   });
   ipcMain.handle("closet:choose-dump", async () => {
     const r = await dialog.showOpenDialog(win, {
