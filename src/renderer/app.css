@@ -526,10 +526,23 @@ button, a, input, select, textarea, label { -webkit-app-region: no-drag; }
 .stamp-demo { margin: 10px 0; padding: 8px 12px; border: 2px solid #c70d0d; outline: 1px solid #c70d0d; outline-offset: -5px; border-radius: 2px; color: #e24b4b; text-align: center; display: grid; gap: 2px; }
 .stamp-demo small { font-size: 10.5px; }
 .stamp-demo b { font-size: 21px; letter-spacing: -.01em; }
-.toolbar.filters { margin-top: -6px; }
-.filter-wrap { position: relative; }
-.filter-panel { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: min(760px, 88vw); max-height: 62vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 20px; box-shadow: 0 20px 50px rgba(0, 0, 0, .5); }
-.filter-panel[hidden] { display: none; }
+.toolbar.chips { margin-top: -6px; min-height: 0; }
+.toolbar.chips:empty { display: none; }
+#filterBox { display: inline-flex; align-items: center; gap: 12px; }
+#countLbl { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.pop-wrap { position: relative; display: inline-block; }
+.pop-panel { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 20px 50px rgba(0, 0, 0, .5); }
+.pop-panel[hidden] { display: none; }
+.filter-panel { width: min(640px, 88vw); max-height: 62vh; overflow: auto; padding: 14px 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 20px; }
+.menu-panel { right: 0; left: auto; width: 340px; padding: 6px; }
+.menu-panel button { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; }
+.menu-panel button:hover:not(:disabled) { background: var(--raised); }
+.menu-panel button:disabled { opacity: .45; cursor: default; }
+.menu-head { padding: 6px 10px 4px; font-size: 11.5px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+.menu-sep { height: 1px; background: var(--line-soft); margin: 6px 4px; }
+.menu-panel b { display: block; font-size: 13.5px; font-weight: 600; }
+.menu-panel small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; white-space: normal; }
+.menu-panel em { font-style: normal; color: var(--brass-2); font-weight: 600; }
 .fgroup h4 { margin: 0 0 6px; font-size: 11.5px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
 .fgroup button { display: flex; justify-content: space-between; gap: 10px; width: 100%; text-align: left; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); cursor: pointer; font-size: 13px; }
 .fgroup button:hover { background: var(--raised); }

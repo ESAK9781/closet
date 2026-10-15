@@ -26,7 +26,7 @@ on macOS, `~/.config/closet` on Linux), so there's no reason to open it: add PDF
 or by dragging them on. You can view or change it in **Settings → Folders**. An existing
 `dump`/`metadata` pair from an earlier version keeps working, edits included.
 
-**Quick dump** (Paperwork page) copies every active form into five folders by the first routing
+**Quick dump** (Paperwork page) copies every active form into six folders by the first routing
 step it's still waiting on (the last is fully complete), and puts a print-ready packet with an
 index sheet in the AOC/AMT folder. Output goes to the *Quick dump folder* in Settings → Folders
 (default `Documents/closet/quick dump`). PDFs are
@@ -113,9 +113,11 @@ type** against the blank templates built into the app:
 4. Scans are aligned to the template, and ink the blank template doesn't have shows which boxes and
    signatures are filled.
 
-Routing is tracked in four steps: **SQ/CCF processed → Cadet Commander → Recipient → AOC/AMT**
-(the AF 174 has no Cadet Commander box, so that step shows as n/a there). Any step can be
-recorded by hand when someone signs later.
+Routing is tracked in five steps: **Issuer signed → SQ/CCF processed → Cadet Commander → Recipient → AOC/AMT**
+(the AF 174 has no Cadet Commander box, so that step shows as n/a there). The issuer's signature is
+the Awarding Official box on the Form 10 (it has no separate reporting-official box) and the
+Counselor signature on the AF 174; a form signed further down the route without it gets a warning.
+Any step can be recorded by hand when someone signs later.
 
 ### The rules
 

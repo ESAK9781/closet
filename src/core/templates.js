@@ -102,6 +102,7 @@ export const FORM_TYPES = {
 // can only be set by hand (F174s have no cadet-commander box: it shows as n/a there).
 // [key, label, short name used for the quick-dump folder of forms waiting on this step]
 export const FLAG_DEFS = [
+  ["issuer_signed", "Signed by issuer", "Issuer signature"],
   ["sqccf_processed", "Processed by SQ/CCF", "SQ-CCF processing"],
   ["cadet_cc_initialed", "Initialed by Cadet Commander", "Cadet Commander initials"],
   ["recipient_signed", "Signed by recipient", "Recipient signature"],
@@ -110,12 +111,14 @@ export const FLAG_DEFS = [
 
 const FLAG_SLOTS = {
   F10: {
+    issuer_signed: ["sig_awarding"], // the F10 has no reporting-official signature box: the awarding official signs for the issuer
     sqccf_processed: ["sqccf_initials", "login_date"],
     cadet_cc_initialed: ["cadet_sqcc_initials"], // section V, box 3 "CADET COMMANDER"
     recipient_signed: ["sig_recipient"],
     aoc_signed: ["sig_aoc"],
   },
   F174: {
+    issuer_signed: ["sig_counselor"],
     sqccf_processed: [],
     cadet_cc_initialed: [],
     recipient_signed: ["sig_recipient"],
@@ -131,11 +134,11 @@ export const BULK_STEPS = {
   cadet_cc_initialed: { label: "Cadet Commander initials", initials: "cadet_sqcc_initials", dates: ["cadet_sqcc_date"] },
 };
 
-// The unofficial "approved" stamp (single form only): over the step's signature box, reaching
-// `expandDown` points below it into blank page; and the date box that goes with it, if the form
+// The unofficial "approved" stamp (single form only): over the step's signature box, staying
+// inside it (`expandDown` points below, if ever needed); and the date box that goes with it, if the form
 // has one (the F10's Section VII dates belong to other people, so the stamp carries the date).
 export const APPROVE_STAMP = {
-  sig_aoc: { expandDown: 28, dates: [] },
+  sig_aoc: { expandDown: 0, dates: [] },
   sig_commander: { expandDown: 0, dates: ["commander_date"] },
 };
 

@@ -283,3 +283,43 @@ test("Reader rights and XFA are dropped by the fix; the field is listed in the f
   assert.ok(listed.some((d) => d.lookup(N("T"))?.decodeText?.() === fixed.name));
   assert.ok(af.lookup(N("Fields")) instanceof PDFArray);
 });
+
+/** How many boxes on the pages are named `name` (by their own /T or their parent's). */
+async function boxesNamed(bytes, name) {
+  const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+  let n = 0;
+  for (const page of doc.getPages()) {
+    for (const ref of page.node.Annots()?.asArray() ?? []) {
+      const d = doc.context.lookup(ref);
+      if (!(d instanceof PDFDict) || String(d.lookup(N("Subtype"))) !== "/Widget") continue;
+      const own = d.lookup(N("T")) ?? d.lookup(N("Parent"))?.lookup?.(N("T"));
+      if (own?.decodeText?.() === name) n++;
+    }
+  }
+  return n;
+}
+
+test("adding a field replaces the old box; a real signature or typed text is never removed", async () => {
+  const target = await targetOf(SIG);
+  // the template's own empty box: gone, one new box in its place
+  assert.equal(await boxesNamed(F10, SIG), 1);
+  const fixed = await addField(F10, target, "Recipient signature");
+  assert.equal(await boxesNamed(fixed.bytes, SIG), 0, "the old empty signature box is deleted");
+  assert.equal(await boxesNamed(fixed.bytes, fixed.name), 1);
+  assert.equal((await inspect(fixed.bytes, target)).ok, true);
+  // several kinds of broken box are all replaced
+  for (const fn of [(d) => fieldDict(d, SIG).set(N("Ff"), PDFNumber.of(1)), (d) => fieldDict(d, SIG).set(N("FT"), N("Tx")), (d) => fieldDict(d, SIG).set(N("V"), PDFString.of("junk"))]) {
+    const bytes = await mutate(fn);
+    const r = await addField(bytes, target, "Recipient signature");
+    assert.equal(await boxesNamed(r.bytes, SIG), 0);
+  }
+  // a digital signature already in the box stays, and so does typed text
+  const signed = await mutate((d) => fieldDict(d, SIG).set(N("V"), d.context.obj({ Type: "Sig", ByteRange: [0, 1, 2, 3], Contents: PDFHexString.of("00") })));
+  assert.equal(await boxesNamed((await addField(signed, target, "Recipient signature")).bytes, SIG), 1, "signature kept");
+  const typed = await mutate((d) => { d.getForm().getTextField("SQCCF Initials").setText("EJS"); });
+  const tt = await targetOf("SQCCF Initials", "Text");
+  assert.equal(await boxesNamed((await addField(typed, tt, "SQ-CCF")).bytes, "SQCCF Initials"), 1, "typed text kept");
+  // the stored original is untouched: this works on a copy of the bytes
+  assert.equal(await boxesNamed(F10, SIG), 1);
+});
+

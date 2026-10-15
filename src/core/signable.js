@@ -628,6 +628,11 @@ export async function addField(bytes, target, label = "field") {
   if (!page) throw new Error("That page isn't in the PDF");
 
   const existing = new Set(af0 instanceof PDFDict ? formFields(ctx, af0).map((f) => f.name) : []);
+  // The new field replaces the old box instead of sitting on top of it. Anything that holds something
+  // (a real signature, typed text) is left alone, and the new field goes over it as before.
+  const g0 = pageGeometry(page.node);
+  const oldBox = widgetAt(ctx, page, g0, target.rect);
+  if (oldBox && !holdsContent(ctx, oldBox)) removeWidget({ ctx, af0, touch, holderOf, cat, rootRef }, page, oldBox);
   let name = `${FIELD_PREFIX}${label}`.replace(/\./g, " ");
   for (let i = 2; existing.has(name); i++) name = `${FIELD_PREFIX}${label} ${i}`.replace(/\./g, " ");
 
@@ -740,6 +745,17 @@ function widgetAt(ctx, page, g, rect) {
     found.push({ ref: ref instanceof PDFRef ? ref : null, dict, overlap: iou(norm, rect), inside: centerIn(norm, rect) || centerIn(rect, norm) });
   }
   return found.filter((w) => w.overlap >= 0.5).at(-1) || found.filter((w) => w.inside || w.overlap >= 0.25).sort((a, b) => b.overlap - a.overlap)[0] || null;
+}
+
+/** Does this widget's field hold something worth keeping: a real digital signature, or typed text? */
+function holdsContent(ctx, w) {
+  const chain = chainOf(ctx, w.ref, w.dict);
+  const term = chain.find(({ dict }) => dict.get(N("T")) !== undefined)?.dict ?? w.dict;
+  const v = term.lookup(N("V"));
+  const ft = inherited(chain, "FT");
+  if (hasSignatureValue(v)) return true;
+  if (ft instanceof PDFName && ft.decodeText() === "Sig") return false; // a stray value in a signature field is junk
+  return v !== undefined && v !== null && !(v instanceof PDFDict) && text(v) !== "";
 }
 
 /** Can closet type into this widget's field instead of laying a new box on top? */
@@ -863,7 +879,7 @@ function removeWidget(P, page, w) {
   const annotsRaw = page.node.get(N("Annots"));
   const annots = annotsRaw instanceof PDFRef ? ctx.lookup(annotsRaw) : annotsRaw;
   if (annots instanceof PDFArray) {
-    const i = annots.asArray().findIndex((r) => r === w.ref || (r instanceof PDFRef && w.ref && r.objectNumber === w.ref.objectNumber));
+    const i = annots.asArray().findIndex((r) => r === w.dict || r === w.ref || (r instanceof PDFRef && w.ref && r.objectNumber === w.ref.objectNumber));
     if (i >= 0) {
       annots.remove(i);
       touch(annotsRaw instanceof PDFRef ? annotsRaw : page.ref);
@@ -948,17 +964,36 @@ export async function approveAoc(bytes, o) {
   const date = o.date ? pdfText(o.date) : "";
   const fit = (f, t, size, max) => { while (size > 4 && f.widthOfTextAtSize(t, size) > max) size -= 0.25; return size; };
   const esc = (t) => t.replace(/[()\\]/g, (c) => "\\" + c);
-  const three = H >= 36;
-  const smallSize = fit(reg, small, three ? 6 : 4.8, W - 10);
-  const bigSize = fit(bold, big, three ? Math.min(16, H * 0.4) : Math.min(9.5, H - 14), W - 14);
-  const at = (f, t, size, y) => `${((W - f.widthOfTextAtSize(t, size)) / 2).toFixed(2)} ${y.toFixed(2)} Td (${esc(t)}) Tj`;
-  const bigY = three ? (H - smallSize - 5 - (date ? 10 : 2)) / 2 + (date ? 10 : 2) - bigSize * 0.33 : 6;
-  const content = [
-    `q ${RED} RG ${RED} rg 1.3 w 1 1 ${(W - 2).toFixed(2)} ${(H - 2).toFixed(2)} re S 0.4 w 3 3 ${(W - 6).toFixed(2)} ${(H - 6).toFixed(2)} re S Q`,
-    `q ${RED} rg BT /F2 ${smallSize.toFixed(2)} Tf ${at(reg, small, smallSize, H - smallSize - 3.5)} ET Q`,
-    `q ${RED} rg BT /F1 ${bigSize.toFixed(2)} Tf ${at(bold, big, bigSize, bigY)} ET Q`,
-    date && three ? `q ${RED} rg BT /F2 6 Tf ${at(reg, date, 6, 5)} ET Q` : "",
-  ].join("\n");
+  // Three layouts, always inside the field itself: a tall box stacks three lines; a medium one two;
+  // a short one (the F10's 14 pt AOC/AMT box) puts the big words on the left and the small text and
+  // date stacked beside them.
+  const mode = H >= 36 ? "tall" : H >= 22 ? "medium" : "compact";
+  const txt = (f, name, t, size, x, y) => `q ${RED} rg BT /${name} ${size.toFixed(2)} Tf ${x.toFixed(2)} ${y.toFixed(2)} Td (${esc(t)}) Tj ET Q`;
+  const centered = (f, name, t, size, y) => txt(f, name, t, size, (W - f.widthOfTextAtSize(t, size)) / 2, y);
+  const lines = [];
+  let border = `q ${RED} RG ${RED} rg 1.3 w 1 1 ${(W - 2).toFixed(2)} ${(H - 2).toFixed(2)} re S 0.4 w 3 3 ${(W - 6).toFixed(2)} ${(H - 6).toFixed(2)} re S Q`;
+  if (mode === "compact") {
+    border = `q ${RED} RG 0.9 w 0.6 0.6 ${(W - 1.2).toFixed(2)} ${(H - 1.2).toFixed(2)} re S Q`;
+    const bigSize = fit(bold, big, Math.min(H - 4.5, 10), W * 0.5);
+    const smallSize = Math.min(4.6, fit(reg, small, 4.6, W * 0.62));
+    const bigW = bold.widthOfTextAtSize(big, bigSize);
+    const sideW = Math.max(reg.widthOfTextAtSize(small, smallSize), date ? reg.widthOfTextAtSize(date, smallSize) : 0);
+    const x0b = Math.max(3, (W - (bigW + 7 + sideW)) / 2);
+    lines.push(txt(bold, "F1", big, bigSize, x0b, H / 2 - bigSize * 0.35));
+    const sx = x0b + bigW + 7;
+    if (date) {
+      lines.push(txt(reg, "F2", small, smallSize, sx, H / 2 + 1.2));
+      lines.push(txt(reg, "F2", date, smallSize, sx, H / 2 - smallSize - 0.2));
+    } else lines.push(txt(reg, "F2", small, smallSize, sx, H / 2 - smallSize * 0.35));
+  } else {
+    const tall = mode === "tall";
+    const smallSize = fit(reg, small, tall ? 6 : 4.8, W - 10);
+    const bigSize = fit(bold, big, tall ? Math.min(16, H * 0.4) : Math.min(9.5, H - 14), W - 14);
+    const bigY = tall ? (H - smallSize - 5 - (date ? 10 : 2)) / 2 + (date ? 10 : 2) - bigSize * 0.33 : 6;
+    lines.push(centered(reg, "F2", small, smallSize, H - smallSize - 3.5), centered(bold, "F1", big, bigSize, bigY));
+    if (date && tall) lines.push(centered(reg, "F2", date, 6, 5));
+  }
+  const content = [border, ...lines].join("\n");
   const fontRef = (name) => ctx.register(ctx.obj({ Type: "Font", Subtype: "Type1", BaseFont: name, Encoding: "WinAnsiEncoding" }));
   const ap = ctx.register(ctx.stream(content, {
     Type: "XObject", Subtype: "Form", BBox: [0, 0, W, H], Resources: { Font: { F1: fontRef("Helvetica-Bold"), F2: fontRef("Helvetica") } },

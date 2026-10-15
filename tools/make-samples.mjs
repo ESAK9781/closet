@@ -152,6 +152,7 @@ export async function makeSamples(out) {
   fill(doc, F10_VALUES);
   let rects = widgetRects(doc);
   squiggle(doc.getPage(0), rects["AOC Signature"][0]);
+  squiggle(doc.getPage(0), rects["Awarding Official Signature"][0]);
   await save(doc, "John Doe_Neg_F10_Uniform Violation.pdf");
 
   // 2. Recreated F10: page redrawn, every field renamed and shifted a few points, labels as text,
@@ -182,6 +183,7 @@ export async function makeSamples(out) {
     }
   }
   squiggle(doc.getPage(0), newRects["Recieving Cadet Signature"][0]);
+  squiggle(doc.getPage(0), newRects["Awarding Official Signature"][0]);
   await printLabels(doc, doc.getPage(0), trects);
   await save(doc, "Jane Smith_Pos_F10_Community Service.pdf");
 
@@ -191,6 +193,7 @@ export async function makeSamples(out) {
     "Conduct Narrative": "Late to SAMI by 4 minutes.", Tours: "", "POV Priv": "None" });
   rects = widgetRects(doc);
   squiggle(doc.getPage(0), rects["Recieving Cadet Signature"][0]);
+  squiggle(doc.getPage(0), rects["Awarding Official Signature"][0]);
   await printLabels(doc, doc.getPage(0), rects);
   doc.getForm().flatten();
   await save(doc, "Maria Garcia_Neg_F10_Late to SAMI.pdf");
@@ -201,6 +204,7 @@ export async function makeSamples(out) {
   rects = widgetRects(doc);
   squiggle(doc.getPage(0), rects["AOC Signature"][0]);
   squiggle(doc.getPage(0), rects["Recieving Cadet Signature"][0]);
+  squiggle(doc.getPage(0), rects["Awarding Official Signature"][0]);
   const pngs = await scanPages(await doc.save(), 150);
   const scan = await PDFDocument.create();
   for (const png of pngs) {
@@ -219,6 +223,7 @@ export async function makeSamples(out) {
   });
   rects = widgetRects(doc);
   squiggle(doc.getPage(rects["Counselee Signature"][0].page), rects["Counselee Signature"][0]);
+  squiggle(doc.getPage(rects["Counselor Signature"][0].page), rects["Counselor Signature"][0]);
   const mfr = doc.insertPage(0, [612, 792]);
   const helv = await doc.embedFont(StandardFonts.Helvetica);
   mfr.drawText("MEMORANDUM FOR RECORD", { x: 72, y: 702, size: 14, font: helv });
@@ -238,11 +243,13 @@ export async function makeSamples(out) {
   inkAnnot(doc, doc.getPage(cs.page), cs);
   const cm = rects["Commander Signature"][0];
   squiggle(doc.getPage(cm.page), cm);
+  squiggle(doc.getPage(rects["Counselor Signature"][0].page), rects["Counselor Signature"][0]);
   await save(doc, "Riya Patel_Pos_F174_Element Leadership.pdf");
 
   // 7. Comma in the filename recipient is still ONE person ("Lee, Kevin" -> Kevin Lee)
   doc = await load(F10);
   fill(doc, { "Recieving Cadet Name": "Lee, Kevin", "Recieving Cadet Year": "2026", Date: "19 Sep 26", "Conduct Narrative": "Missed accountability formation." });
+  squiggle(doc.getPage(0), widgetRects(doc)["Awarding Official Signature"][0]);
   await save(doc, "Lee, Kevin_Neg_F10_Missed Formation.pdf");
 
   // 8. Same cadet as #1 with a one-letter typo ("Jon" vs "John"): the app asks if they're the same
@@ -252,11 +259,14 @@ export async function makeSamples(out) {
     "Couseling Summary": "Reviewed uniform standards after the 11 Sep report.",
     "Name Grade and Duty Title of Counselor": "C/SSgt Park, Flight Sergeant", "Couseling Date_af_date": "2026-09-16",
   });
+  const cr = widgetRects(doc)["Counselor Signature"][0];
+  squiggle(doc.getPage(cr.page), cr);
   await save(doc, "Jon Doe_Neg_F174_Uniform Follow-up.pdf");
 
   // 9. Badly named file
   doc = await load(F10);
   fill(doc, { "Recieving Cadet Name": "Kim, Daniel", Date: "21 Sep 26", "Conduct Narrative": "Unsecured room." });
+  squiggle(doc.getPage(0), widgetRects(doc)["Awarding Official Signature"][0]);
   await save(doc, "scan0042.pdf");
 }
 

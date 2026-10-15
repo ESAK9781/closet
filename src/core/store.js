@@ -774,7 +774,11 @@ export class Store extends EventEmitter {
 
   summary(m, roster) {
     const rec = m.analysis ? R.buildRecord(m, this.settings, roster) : null;
-    const issues = m.issues || [];
+    const issues = [...(m.issues || [])];
+    // someone signed further down the route but the issuer never did: the usual way paperwork gets uploaded incomplete
+    if (rec && rec.issuer_signed === false && (rec.recipient_signed || rec.aoc_signed)) {
+      issues.push({ level: "warn", text: `Signed by ${rec.aoc_signed ? "AOC/AMT" : "the recipient"}, but the issuer's signature (${rec.form_type === "F174" ? "counselor" : "awarding official"}) is missing` });
+    }
     const flagged = issues.some((i) => i.level === "review");
     return {
       id: m.id,

@@ -3,6 +3,7 @@
 
 // ------------------------------------------------------------------ constants
 const FLAGS = [
+  ["issuer_signed", "Issuer", "Signed by issuer"],
   ["sqccf_processed", "SQ/CCF", "Processed by SQ/CCF"],
   ["cadet_cc_initialed", "Cadet CC", "Initialed by Cadet Commander"],
   ["recipient_signed", "Recipient", "Signed by recipient"],
@@ -58,7 +59,7 @@ const S = {
   data: null,
   version: -1,
   view: "overview",
-  f: { q: "", type: "all", pn: "all", step: "all", attn: "all", tracker: "all", reason: "all", year: "all", month: "all" },
+  f: { q: "", type: "all", pn: "all", step: "all" },
   sort: { key: "date", dir: -1 },
   cadetQ: "",
   cadetOpen: null,
@@ -538,46 +539,49 @@ function drawReasons(el, forms) {
 
 // ------------------------------------------------------------------ paperwork list
 function viewPaperwork() {
-  const seg = (name, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button type="button" data-seg="${name}" data-v="${v}" aria-pressed="${S.f[name] === v}">${l}</button>`).join("")}</div>`;
+  openPop = null; // the toolbar is rebuilt below
   $("#main").innerHTML = head("Paperwork", "Every form in the dump folder. Click one to see what was detected, fix anything, or record a new signature.") + banners() + `
     <div class="toolbar">
       <label class="search">${icon("search")}<input class="input" id="q" type="search" placeholder="Search names, reasons, issuers, files" value="${esc(S.f.q)}" aria-label="Search paperwork"></label>
-      ${seg("type", [["all", "All forms"], ["F10", "F10"], ["F174", "F174"]])}
-      ${seg("pn", [["all", "Both"], ["Neg", "Negative"], ["Pos", "Positive"]])}
+      <span id="filterBox"></span>
       <span class="spacer"></span>
       <button class="btn ghost small" type="button" id="bulkUpload" title="Pick PDFs to add to the dump folder">${icon("upload")}Add files</button>
-      <button class="btn ghost small" type="button" id="bulkSqccf" title="Write the same initials (and the date) into every form still waiting on SQ/CCF processing">${icon("check")}SQ/CCF initials</button>
-      <button class="btn ghost small" type="button" id="bulkCc" title="Write the same initials and the date into every form still waiting on the Cadet Commander">${icon("check")}Cadet CC initials</button>
-      <button class="btn ghost small" type="button" id="bulkDownload" title="Download every form still awaiting a particular signature">${icon("download")}Download by signature</button>
+      ${autoMenuHtml()}
       ${syncMode()
         ? `<button class="btn small" type="button" id="quickDump" ${syncBusy ? "disabled" : ""} title="Pull signed copies back in, then push every form to the folder for its next step">${icon("refresh")}Sync</button>`
         : `<button class="btn ghost small" type="button" id="quickDump" title="Sort every form into a folder by the first step it is still waiting on">${icon("download")}Quick dump</button>`}
     </div>
-    <div class="toolbar filters" id="filters"></div>
+    <div class="toolbar chips" id="filterChips"></div>
     <div id="results"></div>`;
   $("#q").oninput = (e) => { S.f.q = e.target.value; renderPaperRows(); };
   $("#bulkUpload").onclick = bulkUpload;
-  $("#bulkDownload").onclick = bulkDownloadBySignature;
-  $("#bulkSqccf").onclick = () => bulkStep("sqccf_processed");
-  $("#bulkCc").onclick = () => bulkStep("cadet_cc_initialed");
+  $("#bulkDownload").onclick = () => { closePop(); bulkDownloadBySignature(); };
+  $("#bulkSqccf").onclick = () => { closePop(); bulkStep("sqccf_processed"); };
+  $("#bulkCc").onclick = () => { closePop(); bulkStep("cadet_cc_initialed"); };
   $("#quickDump").onclick = syncMode() ? runSync : quickDump;
-  $$("[data-seg]").forEach((b) => (b.onclick = () => {
-    S.f[b.dataset.seg] = b.dataset.v;
-    $$(`[data-seg="${b.dataset.seg}"]`).forEach((x) => x.setAttribute("aria-pressed", x === b));
-    renderPaperRows();
-  }));
+  $("#autoBtn").onclick = () => togglePop("autoBtn", "autoMenu");
   renderPaperRows();
 }
 
-// ---- filters. Every dropdown shows how many forms each choice would leave, given the *other*
-// filters, so a choice that would empty the list is never a surprise.
-const FILTER_OFF = { q: "", type: "all", pn: "all", step: "all", attn: "all", tracker: "all", reason: "all", year: "all", month: "all" };
+// "Complete steps": the automated actions that write initials and dates into every waiting form.
+function autoMenuHtml() {
+  const waiting = (k) => active().filter((f) => f.parsed && f.record[k] === false).length;
+  const item = (id, k, title, tip) => `<button type="button" id="${id}" ${waiting(k) ? "" : "disabled"}><span><b>${title}</b><small>${tip}</small></span><em>${waiting(k)}</em></button>`;
+  return `<div class="pop-wrap"><button type="button" class="btn ghost small" id="autoBtn" aria-expanded="false" aria-controls="autoMenu" title="Complete a step for every waiting form, or download forms by signature">${icon("check")}Actions</button>
+    <div class="pop-panel menu-panel" id="autoMenu" hidden>
+      <div class="menu-head">Complete a step for all waiting forms</div>
+      ${item("bulkSqccf", "sqccf_processed", "SQ/CCF initials", "Your initials and today's date on every form waiting for SQ/CCF")}
+      ${item("bulkCc", "cadet_cc_initialed", "Cadet Commander initials", "The commander's initials and today's date on every form waiting for them")}
+      <div class="menu-sep"></div>
+      <button type="button" id="bulkDownload"><span><b>Download by signature…</b><small>Copy every form still waiting on a chosen signature into a folder</small></span></button>
+    </div></div>`;
+}
+
+// ---- filter presets: one Filter button, one panel. Three groups of presets (how far along a form is,
+// which form it is, positive or negative); one choice per group, groups combine. Counts follow the
+// other groups, so a preset that would show nothing isn't offered.
+const FILTER_OFF = { q: "", type: "all", pn: "all", step: "all" };
 const firstOpen = (f) => (f.parsed ? FLAGS.find(([k]) => f.record[k] === false)?.[0] ?? "complete" : null);
-const reasonOf = (f) => (f.record?.reason_category || "").trim() || "Unspecified";
-const yearsOf = (f) => String(f.record?.class_year || "").split(",").map((y) => y.trim()).filter(Boolean);
-const monthOf = (f) => (f.record?.date_iso || "").slice(0, 7) || "none";
-const monthLabel = (k) => (k === "none" ? "No date" : `${MONTHS[+k.slice(5) - 1]} ${k.slice(0, 4)}`);
-const attnOf = (f) => (f.needs_review ? "review" : isIncomplete(f) ? "incomplete" : "clean");
 
 function matchesFilters(f, F, skip = "") {
   const r = f.record || {};
@@ -588,14 +592,6 @@ function matchesFilters(f, F, skip = "") {
     const st = firstOpen(f);
     if (F.step === "open" ? !st || st === "complete" : st !== F.step) return false;
   }
-  if (skip !== "attn" && F.attn !== "all") {
-    const a = attnOf(f);
-    if (F.attn === "needs" ? a === "clean" : a !== F.attn) return false;
-  }
-  if (skip !== "tracker" && F.tracker !== "all" && (F.tracker === "logged" ? !f.logged : f.logged || !f.parsed)) return false;
-  if (skip !== "reason" && F.reason !== "all" && reasonOf(f) !== F.reason) return false;
-  if (skip !== "year" && F.year !== "all" && !yearsOf(f).includes(F.year)) return false;
-  if (skip !== "month" && F.month !== "all" && monthOf(f) !== F.month) return false;
   if (q) {
     const hay = [f.filename, r.recipients, r.reason_category, r.reason_details, r.issuer, r.class_year, f.notes].join(" ").toLowerCase();
     if (!q.split(/\s+/).every((t) => hay.includes(t))) return false;
@@ -603,59 +599,57 @@ function matchesFilters(f, F, skip = "") {
   return true;
 }
 
-// One "Filter" control: a button that opens a single panel with every choice. Counts follow the
-// other active filters, so a choice that would show nothing isn't offered.
-let filterOpen = false;
-document.addEventListener("click", (e) => {
-  if (filterOpen && !e.target.closest(".filter-wrap")) { filterOpen = false; $("#filterPanel")?.setAttribute("hidden", ""); $("#filterBtn")?.setAttribute("aria-expanded", "false"); }
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && filterOpen && !modalOpen()) { filterOpen = false; renderFilters(); }
-});
+// Popovers (the filter panel and the "Complete steps" menu) close on an outside click or Escape.
+let openPop = null;
+function closePop() {
+  if (!openPop) return;
+  $(`#${openPop.panel}`)?.setAttribute("hidden", "");
+  $(`#${openPop.btn}`)?.setAttribute("aria-expanded", "false");
+  openPop = null;
+}
+function togglePop(btn, panel) {
+  const was = openPop?.panel === panel;
+  closePop();
+  if (was) return;
+  $(`#${panel}`)?.removeAttribute("hidden");
+  $(`#${btn}`)?.setAttribute("aria-expanded", "true");
+  openPop = { btn, panel };
+}
+document.addEventListener("click", (e) => { if (openPop && !e.target.closest(".pop-wrap")) closePop(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openPop && !modalOpen()) closePop(); });
 
 function renderFilters() {
-  const el = $("#filters");
-  if (!el) return;
+  const box = $("#filterBox");
+  const chipsEl = $("#filterChips");
+  if (!box || !chipsEl) return;
+  const keep = openPop?.panel === "filterPanel";
   const pool = (S.data.forms || []).filter((f) => !f.archived);
   const facet = (key) => pool.filter((f) => matchesFilters(f, S.f, key));
-  const count = (fn, list) => list.reduce((m, f) => { for (const k of fn(f)) m.set(k, (m.get(k) || 0) + 1); return m; }, new Map());
   const stepF = facet("step");
-  const steps = [["all", "Any", stepF.length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
-    ...FLAGS.map(([k, short]) => [k, `Needs ${short} next`, stepF.filter((f) => firstOpen(f) === k).length]), ["complete", "Fully routed", stepF.filter((f) => firstOpen(f) === "complete").length]];
-  const attnF = facet("attn");
-  const attn = [["all", "Any", attnF.length], ["needs", "Needs attention", attnF.filter((f) => attnOf(f) !== "clean").length], ["review", "Needs review", attnF.filter((f) => attnOf(f) === "review").length],
-    ["incomplete", "Missing CDNA/Passes", attnF.filter((f) => attnOf(f) === "incomplete").length], ["clean", "Nothing to fix", attnF.filter((f) => attnOf(f) === "clean").length]];
-  const trF = facet("tracker");
-  const tracker = [["all", "Any", trF.length], ["unlogged", "Not in the tracker", trF.filter((f) => f.parsed && !f.logged).length], ["logged", "In the tracker", trF.filter((f) => f.logged).length]];
-  const rs = count((f) => [reasonOf(f)], facet("reason"));
-  const reasons = [["all", "Any", facet("reason").length], ...[...rs].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => [k, k, n])];
-  const ys = count(yearsOf, facet("year"));
-  const years = [["all", "Any", facet("year").length], ...[...ys].sort((a, b) => b[0].localeCompare(a[0])).map(([k, n]) => [k, `Class of ${k}`, n])];
-  const ms = count((f) => [monthOf(f)], facet("month"));
-  const months = [["all", "Any", facet("month").length], ...[...ms].sort((a, b) => (a[0] === "none") - (b[0] === "none") || b[0].localeCompare(a[0])).map(([k, n]) => [k, monthLabel(k), n])];
-  const groups = [["step", "Next step", steps], ["attn", "Attention", attn], ["tracker", "Tracker", tracker], ["reason", "Reason", reasons], ["year", "Class year", years], ["month", "Month", months]];
-  for (const [key, , opts] of groups) {
-    if (S.f[key] !== "all" && !opts.some(([v]) => v === S.f[key])) { S.f[key] = "all"; return renderPaperRows(); } // that choice no longer exists
-  }
+  const steps = [["all", "Any progress", stepF.length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
+    ...FLAGS.map(([k, short]) => [k, `Needs ${short}`, stepF.filter((f) => firstOpen(f) === k).length]), ["complete", "Fully complete", stepF.filter((f) => firstOpen(f) === "complete").length]];
+  const typeF = facet("type");
+  const types = [["all", "Any form", typeF.length], ["F10", "Form 10", typeF.filter((f) => f.record.form_type === "F10").length], ["F174", "AF 174", typeF.filter((f) => f.record.form_type === "F174").length]];
+  const pnF = facet("pn");
+  const pns = [["all", "Positive or negative", pnF.length], ["Pos", "Positive", pnF.filter((f) => f.record.pos_neg === "Pos").length], ["Neg", "Negative", pnF.filter((f) => f.record.pos_neg === "Neg").length]];
+  const groups = [["step", "Progress", steps], ["type", "Form", types], ["pn", "Result", pns]];
   const on = groups.filter(([k]) => S.f[k] !== "all");
   const section = ([key, label, opts]) => `<div class="fgroup"><h4>${label}</h4>${opts
     .filter(([v, , n]) => v === "all" || v === S.f[key] || n !== 0)
     .map(([v, l, n]) => `<button type="button" data-filter="${key}" data-v="${esc(v)}" aria-pressed="${S.f[key] === v}"><span>${esc(l)}</span><em>${n}</em></button>`).join("")}</div>`;
-  const chip = ([key, label, opts]) => `<button type="button" class="fchip" data-unfilter="${key}" title="Remove this filter">${label}: ${esc(opts.find(([v]) => v === S.f[key])?.[1] ?? S.f[key])}${icon("x")}</button>`;
-  el.innerHTML = `<div class="filter-wrap"><button type="button" class="btn small ${on.length ? "" : "ghost"}" id="filterBtn" aria-expanded="${filterOpen}" aria-controls="filterPanel">${icon("search")}Filter${on.length ? ` · ${on.length}` : ""}</button>
-      <div class="filter-panel" id="filterPanel" ${filterOpen ? "" : "hidden"}>${groups.map(section).join("")}</div></div>
-    ${on.map(chip).join("")}
-    ${on.length || S.f.type !== "all" || S.f.pn !== "all" || S.f.q ? `<button type="button" class="btn ghost small" id="clearFilters">${icon("x")}Clear filters</button>` : ""}<span class="spacer"></span><span id="countLbl" style="color:var(--muted);font-size:13px"></span>`;
-  $("#filterBtn").onclick = () => { filterOpen = !filterOpen; $("#filterPanel").toggleAttribute("hidden", !filterOpen); $("#filterBtn").setAttribute("aria-expanded", filterOpen); };
-  $$("[data-filter]", el).forEach((b) => (b.onclick = () => { S.f[b.dataset.filter] = b.dataset.v; renderPaperRows(); }));
-  $$("[data-unfilter]", el).forEach((b) => (b.onclick = () => { S.f[b.dataset.unfilter] = "all"; renderPaperRows(); }));
+  box.innerHTML = `<div class="pop-wrap"><button type="button" class="btn small ${on.length ? "" : "ghost"}" id="filterBtn" aria-expanded="${keep}" aria-controls="filterPanel">${icon("search")}Filter${on.length ? ` · ${on.length}` : ""}</button>
+    <div class="pop-panel filter-panel" id="filterPanel" ${keep ? "" : "hidden"}>${groups.map(section).join("")}</div></div><span id="countLbl"></span>`;
+  chipsEl.innerHTML = on.map(([key, label, opts]) => `<button type="button" class="fchip" data-unfilter="${key}" title="Remove this filter">${esc(opts.find(([v]) => v === S.f[key])?.[1] ?? S.f[key])}${icon("x")}</button>`).join("")
+    + (on.length ? `<button type="button" class="btn ghost small" id="clearFilters">${icon("x")}Clear</button>` : "");
+  $("#filterBtn").onclick = () => togglePop("filterBtn", "filterPanel");
+  $$("[data-filter]", box).forEach((b) => (b.onclick = () => { S.f[b.dataset.filter] = b.dataset.v; renderPaperRows(); }));
+  $$("[data-unfilter]", chipsEl).forEach((b) => (b.onclick = () => { S.f[b.dataset.unfilter] = "all"; renderPaperRows(); }));
   const clr = $("#clearFilters");
   if (clr) {
     clr.onclick = () => {
       Object.assign(S.f, FILTER_OFF);
       const q = $("#q");
       if (q) q.value = "";
-      $$("[data-seg]").forEach((b) => b.setAttribute("aria-pressed", S.f[b.dataset.seg] === b.dataset.v));
       renderPaperRows();
     };
   }

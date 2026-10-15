@@ -51,6 +51,7 @@ test("SQ/CCF button: asks for initials once, writes them and today's date into t
   assert.equal(lee.record.sqccf_processed, false);
   const file = path.join(tmp, "dump", lee.filename);
   const bytes0 = fs.readFileSync(file);
+  await page.click("#autoBtn");
   await page.click("#bulkSqccf");
   assert.match(await modalTitle(), /SQ\/CCF processing: initial \d+ forms?\?/);
   assert.equal(await page.inputValue("#mInput"), "", "nothing remembered yet");
@@ -68,11 +69,12 @@ test("SQ/CCF button: asks for initials once, writes them and today's date into t
   assert.ok(d.analysis.slots.login_date.value, "log-in date written");
   assert.ok(fs.readFileSync(file).subarray(0, bytes0.length).equals(bytes0), "an edit on top of the original");
   assert.equal(s.settings.bulk_initials.sqccf_processed, "ejs");
-  // nothing is left: the next click just says so
-  await page.click("#bulkSqccf");
-  await page.waitForTimeout(500);
-  assert.equal(await page.$(".modal-scrim"), null);
-  assert.match(await page.textContent("#toasts"), /Nothing is waiting/);
+  // nothing is left: the menu item is switched off
+  await go("paperwork");
+  await page.click("#autoBtn");
+  assert.equal(await page.$eval("#bulkSqccf", (b) => b.disabled), true);
+  assert.match(await page.textContent("#bulkSqccf"), /0$/);
+  await page.keyboard.press("Escape");
 });
 
 test("Cadet CC button: remembered initials are offered, dated, flag set", async () => {
@@ -82,6 +84,7 @@ test("Cadet CC button: remembered initials are offered, dated, flag set", async 
   await page.press('[data-set="bulk_initials.cadet_cc_initialed"]', "Tab");
   await page.waitForTimeout(500);
   await go("paperwork");
+  await page.click("#autoBtn");
   await page.click("#bulkCc");
   assert.match(await modalTitle(), /Cadet Commander initials: initial/);
   assert.equal(await page.inputValue("#mInput"), "RTH", "initials remembered from Settings");

@@ -84,7 +84,7 @@ test("settings: quick dump is the default, the packet is off, and sync folders o
   await go("settings");
   await page.selectOption('[data-set="dump_mode"]', "sync");
   await page.waitForSelector("[data-sfc]");
-  assert.equal((await page.$$("[data-sfc]")).length, 10, "four steps (send + returned), complete (send), new paperwork (returned)");
+  assert.equal((await page.$$("[data-sfc]")).length, 12, "five steps (send + returned), complete (send), new paperwork (returned)");
   assert.equal(await page.$("#quickChoose"), null, "quick dump folder hidden in sync mode");
   await go("paperwork");
   assert.match(await page.textContent("#quickDump"), /Sync/);
