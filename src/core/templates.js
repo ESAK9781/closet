@@ -123,6 +123,22 @@ const FLAG_SLOTS = {
   },
 };
 
+// Steps a person can complete in bulk by initialing every form: the box for their initials, and
+// the date boxes that go with it (Section III box 1 "log-in date"; Section V box 3 "date").
+// `dateSetting`: a settings key that must be on for dates to be filled (absent = always).
+export const BULK_STEPS = {
+  sqccf_processed: { label: "SQ/CCF processing", initials: "sqccf_initials", dates: ["login_date"], dateSetting: "first_shirt_fill_date" },
+  cadet_cc_initialed: { label: "Cadet Commander initials", initials: "cadet_sqcc_initials", dates: ["cadet_sqcc_date"] },
+};
+
+// The unofficial "approved" stamp (single form only): over the step's signature box, reaching
+// `expandDown` points below it into blank page; and the date box that goes with it, if the form
+// has one (the F10's Section VII dates belong to other people, so the stamp carries the date).
+export const APPROVE_STAMP = {
+  sig_aoc: { expandDown: 28, dates: [] },
+  sig_commander: { expandDown: 0, dates: ["commander_date"] },
+};
+
 export function flagSlots(formType, settings) {
   const base = FLAG_SLOTS[formType] || {};
   const out = Object.fromEntries(Object.entries(base).map(([k, v]) => [k, [...v]]));

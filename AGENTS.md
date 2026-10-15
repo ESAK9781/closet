@@ -9,7 +9,7 @@ together and how to change it safely.
 **closet** is an Electron desktop app for a first sergeant tracking AFCW Form 10s and AF Form 174s
 (cadet discipline paperwork). It reads PDFs from a **dump folder**, matches their fields against
 two blank templates by position, and produces rows for a Google Sheets "Conduct Log". PDFs in the
-dump folder are read-only from the app's point of view: never moved, never modified.
+dump folder are never moved, and only changed by the few explicit actions listed under "Editing PDFs and sync safety" (each keeps the original).
 
 ## Layout
 
@@ -19,6 +19,8 @@ dump folder are read-only from the app's point of view: never moved, never modif
 | `src/main/updater.js` | Auto-update from GitHub releases (electron-updater); state shown in Settings → Updates |
 | `src/main/preload.cjs` | The only bridge into the renderer — a small explicit `window.closet` API, no Node in the page |
 | `src/core/store.js` | The metadata store: scanning, the parser-thread queue, settings, edits, file add/replace |
+| `src/core/sync.js` | Sync mode: pull / match / clear / push over per-step folders; the ledger that guarantees only closet's own files are ever deleted |
+| `src/core/signable.js` | PDF structure checks ("can Adobe sign here?") and edits as incremental updates: `addField`, `fillSlots`, `approveAoc` |
 | `src/core/records.js` | Pure functions turning raw slot values + overrides into tracker records and sheet rows |
 | `src/core/templates.js` | The *meaning* of each template field (semantic key, label, section) and the routing-flag definitions |
 | `src/core/pool.js`, `worker.js`, `extract.js`, `imaging.js`, `assignment.js` | The pdf.js-based parser: template matching, field extraction, worker-thread pool |
@@ -75,6 +77,22 @@ instead of the renderer polling; `load()` in `app.js` re-fetches the whole snaps
 - Renderer state lives in the single `S` object at the top of `app.js`; view functions read `S` and
   re-render whole sections rather than diffing. Follow that pattern rather than introducing
   component state.
+
+## Editing PDFs and sync safety
+
+- `signable.js` writes **incremental updates** (original bytes kept, change appended) so digital
+  signatures stay valid; only a damaged, unsigned file is rewritten. Don't swap in `pdf-lib`'s
+  `save()` for edits to a user's PDF. Objects it creates must be registered (`ctx.register`): an
+  embedded pdf-lib font that is never saved is a dangling reference.
+- The dump folder is edited by exactly three things: Upload/sync replacing a form, the bulk step
+  buttons, and the AOC/AMT stamp. The last two copy the original to `metadata/backups` first.
+- Sync **never deletes a file it didn't create.** Send folders are cleared only of ledger entries
+  whose hash still matches; everything else is reported. Keep it that way: `test/sync.test.mjs`
+  asserts it.
+- Steps with a bulk action are in `templates.BULK_STEPS`; the AOC/AMT approval is deliberately not
+  one of them (single form only).
+- Worker jobs (`analyze`, `inspect`, `addField`, `fillSlots`, `approveAoc`) go through
+  `pool.run()`; PDF work must stay off the main process.
 
 ## Privacy and git
 

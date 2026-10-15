@@ -35,6 +35,48 @@ Paperwork, to copy them into the dump folder. If a name you're adding is already
 asks whether it's an updated copy of the same paperwork (say, scanned back in now that it's
 signed) or a different form — no need to sort that out by hand first.
 
+### Sync mode
+
+**Settings → Quick dump and sync → Mode** switches Quick dump to **Sync**. Each routing step then
+gets a *send* folder (copies of forms waiting on it) and a *returned* folder (where signed copies
+are saved), plus a *Fully complete* send folder and a *New paperwork* returned folder. A step with
+no folder set is simply skipped. Pressing **Sync** on Paperwork:
+
+1. **Pulls** files added to a returned folder since the last sync (turning sync on starts the
+   clock: nothing already sitting there is pulled). Each is matched to the form it came from by
+   content and filename, and you confirm every match in one table. Tick **Review** on a row to
+   compare it side by side in the Review tab first. A confirmed match replaces the form's PDF
+   exactly like **Upload updated copy**.
+2. **Clears** the send folders, removing only copies closet put there itself and never touched
+   since. Anything else (a file someone added, a copy that was signed in place, any subfolder) is
+   left alone and listed for you.
+3. **Pushes** every form to the folder for its next step, after checking the field that step needs
+   can really be signed in Adobe (it exists, is a real signature/text field, isn't read-only,
+   locked, or already holding a signature value; the file isn't damaged, certified, or secured).
+   A form that fails is shown with a picture of where the field should be, and you choose: record
+   the step as done (the signature was flattened in), add a new field on top in the copy that's
+   sent, or send it as it is. Your stored PDF is never changed by this.
+
+The combined AOC/AMT print packet is off by default; turn it on in the same settings section.
+
+### One-click steps
+
+On Paperwork, **SQ/CCF initials** and **Cadet CC initials** write the same initials into every form
+still waiting on that step, plus today's date in the date box (SQ/CCF: the log-in date, which can be
+turned off in Settings → Bulk initials; Cadet CC: Section V box 3's date). Initials are remembered.
+Where a form has no usable box, a text box is placed on top of the spot. The PDFs are updated (the
+originals are kept in `metadata/backups`) and the step is marked done. The same two buttons appear on
+a single form in the viewer, along with **Mark AOC/AMT approved**: for when the AMT says a form is
+approved but sends no signed copy. It removes the empty signature box, stamps the spot in red
+("Marked AOC/AMT approved by First Sergeant (unofficial)", "AOC/AMT Approved"), fills the commander
+date on an AF 174, and marks the step done. It's a one-form-at-a-time action by design.
+
+### Finding forms
+
+The Paperwork list filters by form type, Pos/Neg, **next step needed**, **attention** (review /
+missing CDNA and Passes), tracker status, reason, class year, and month. Each dropdown shows how
+many forms a choice would leave given the other filters, and **Clear filters** resets them all.
+
 Open any form and use **Download** to save a copy of its PDF elsewhere, or **Upload updated
 copy** to replace it with a newer one (same filename, so your edits and signatures stay put).
 **Download by signature** in Paperwork copies every form still awaiting a chosen signature into a
@@ -95,7 +137,9 @@ Confinements, Other. Choose **Copy and mark as logged**, click the first empty D
 | `renders/<id>/` | Page images for the app (safe to delete; rebuilt) |
 | `templates/` | Cached template geometry (safe to delete; rebuilt) |
 | `names.json` | Name spellings you confirmed |
-| `settings.json` | Tracker labels, month format, tolerance, and so on |
+| `settings.json` | Tracker labels, month format, tolerance, sync folders, remembered initials, and so on |
+| `sync.json` | Sync state: when it started, what closet put in the send folders, files waiting for a decision |
+| `backups/` | The original of any PDF closet edited (bulk initials, approval stamp) |
 
 **Settings → Clear metadata and rescan** starts over: it erases cached reads and edits (settings
 are kept) and reads every PDF again.

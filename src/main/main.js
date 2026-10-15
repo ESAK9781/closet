@@ -83,6 +83,13 @@ async function route(method, url, body) {
   if (method === "GET" && p === "/api/state") return { ...store.snapshot(), quick_dump_dir: config.quickDumpDir };
   if (method === "GET" && p === "/api/version") return { version: store.version, status: { ...store.status, queued: store.queue.length + store.inFlight.size } };
   if (method === "POST" && p === "/api/quick-dump") return store.quickDump(config.quickDumpDir);
+  if (method === "GET" && p === "/api/bulk-step") {
+    const ids = (q.get("ids") || "").split(",").filter(Boolean);
+    const plan = store.bulkPlan(q.get("step") || "", ids.length ? ids : null);
+    return { ...plan, forms: plan.forms.map((f) => ({ id: f.id, filename: f.filename, recipients: f.recipients, writes: f.items.length })) };
+  }
+  if (method === "POST" && p === "/api/bulk-step") return store.bulkStep(String(body?.step || ""), body?.initials, Array.isArray(body?.ids) ? body.ids.map(String) : null);
+  if ((x = m(/^\/api\/forms\/([0-9a-f]+)\/approve-aoc$/)) && method === "POST") return store.approveAoc(x[1]);
   if (method === "POST" && p === "/api/sync/pull") return store.sync.pull();
   if (method === "POST" && p === "/api/sync/resolve") return store.sync.resolve(Array.isArray(body?.decisions) ? body.decisions : []);
   if (method === "POST" && p === "/api/sync/push") return store.sync.push();

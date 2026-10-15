@@ -58,7 +58,7 @@ const S = {
   data: null,
   version: -1,
   view: "overview",
-  f: { q: "", type: "all", pn: "all", status: "all" },
+  f: { q: "", type: "all", pn: "all", step: "all", attn: "all", tracker: "all", reason: "all", year: "all", month: "all" },
   sort: { key: "date", dir: -1 },
   cadetQ: "",
   cadetOpen: null,
@@ -72,6 +72,9 @@ const S = {
   tab: "record",
   boxes: true,
   reviewId: null,
+  zoom: { drawer: 1, review: 1 }, // page preview size
+  wide: false,       // review: preview takes the whole card (queue and fields tucked away) so print is readable
+  syncPick: null,
   stale: false,
 };
 
@@ -118,13 +121,13 @@ function toast(msg, err = false) {
 // ------------------------------------------------------------------ in-app dialogs
 // Electron has no window.prompt(), and confirm() is a blocking native box, so questions are asked
 // in the page. Resolves with the chosen value, the typed text, or null when dismissed (Esc).
-function ask({ title, message = "", input = null, select = null, choices = null, danger = false }) {
+function ask({ title, message = "", input = null, select = null, choices = null, danger = false, wide = false }) {
   return new Promise((resolve) => {
     const prev = document.activeElement;
     const scrim = document.createElement("div");
     scrim.className = "modal-scrim";
     const btns = choices || [{ label: "Cancel", value: null }, { label: "OK", value: true, primary: true }];
-    scrim.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    scrim.innerHTML = `<div class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="mTitle">
       <h2 id="mTitle">${esc(title)}</h2>${message ? `<div class="modal-msg">${message}</div>` : ""}
       ${input ? `<input class="input" id="mInput" value="${esc(input.value || "")}" placeholder="${esc(input.placeholder || "")}" autocomplete="off" spellcheck="false"><div class="modal-err" id="mErr" role="alert"></div>` : ""}
       ${select ? `<select class="select" id="mSelect" style="width:100%;margin-top:10px">${select.options.map(([v, l]) => `<option value="${esc(v)}" ${v === select.value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>` : ""}
@@ -188,6 +191,7 @@ const archived = () => (S.data?.forms || []).filter((f) => f.archived);
 const isIncomplete = (f) => (f.incomplete || []).length > 0;
 const inQueue = (f) => f.needs_review || isIncomplete(f);
 const parsed = () => active().filter((f) => f.parsed);
+const syncReviewItems = () => (S.data?.sync?.pending || []).filter((p) => p.status === "review");
 
 function flagState(rec, key) {
   const v = rec?.[key];
@@ -308,7 +312,7 @@ document.addEventListener("focusout", () => setTimeout(() => {
 
 // ------------------------------------------------------------------ chrome
 function renderNav() {
-  const review = active().filter(inQueue).length;
+  const review = active().filter(inQueue).length + syncReviewItems().length;
   const unlogged = parsed().filter((f) => !f.logged).length;
   const items = [
     ["overview", "Overview", ""],
@@ -427,7 +431,7 @@ function viewOverview() {
   drawMonthChart($("#monthChart"), forms);
   drawReasons($("#reasons"), forms);
   $$("[data-open]").forEach((b) => (b.onclick = () => openForm(b.dataset.open)));
-  $$('[data-status="awaiting"]').forEach((a) => (a.onclick = () => { S.f.status = "awaiting"; }));
+  $$('[data-status="awaiting"]').forEach((a) => (a.onclick = () => { S.f.step = "open"; }));
 }
 
 function drawMonthChart(el, forms) {
@@ -540,22 +544,23 @@ function viewPaperwork() {
       <label class="search">${icon("search")}<input class="input" id="q" type="search" placeholder="Search names, reasons, issuers, files" value="${esc(S.f.q)}" aria-label="Search paperwork"></label>
       ${seg("type", [["all", "All forms"], ["F10", "F10"], ["F174", "F174"]])}
       ${seg("pn", [["all", "Both"], ["Neg", "Negative"], ["Pos", "Positive"]])}
-      <select class="select" id="status" style="width:auto" aria-label="Status filter">
-        ${[["all", "Any status"], ["awaiting", "Awaiting a signature"], ["complete", "Fully routed"], ["review", "Needs review"], ["incomplete", "Missing CDNA/Passes"], ["unlogged", "Not in the tracker"], ["logged", "In the tracker"]]
-          .map(([v, l]) => `<option value="${v}" ${S.f.status === v ? "selected" : ""}>${l}</option>`).join("")}
-      </select>
       <span class="spacer"></span>
       <button class="btn ghost small" type="button" id="bulkUpload" title="Pick PDFs to add to the dump folder">${icon("upload")}Add files</button>
+      <button class="btn ghost small" type="button" id="bulkSqccf" title="Write the same initials (and the date) into every form still waiting on SQ/CCF processing">${icon("check")}SQ/CCF initials</button>
+      <button class="btn ghost small" type="button" id="bulkCc" title="Write the same initials and the date into every form still waiting on the Cadet Commander">${icon("check")}Cadet CC initials</button>
       <button class="btn ghost small" type="button" id="bulkDownload" title="Download every form still awaiting a particular signature">${icon("download")}Download by signature</button>
-      <button class="btn ghost small" type="button" id="quickDump" title="Sort every form into a folder by the first step it is still waiting on">${icon("download")}Quick dump</button>
-      <span id="countLbl" style="color:var(--muted);font-size:13px"></span>
+      ${syncMode()
+        ? `<button class="btn small" type="button" id="quickDump" ${syncBusy ? "disabled" : ""} title="Pull signed copies back in, then push every form to the folder for its next step">${icon("refresh")}Sync</button>`
+        : `<button class="btn ghost small" type="button" id="quickDump" title="Sort every form into a folder by the first step it is still waiting on">${icon("download")}Quick dump</button>`}
     </div>
+    <div class="toolbar filters" id="filters"></div>
     <div id="results"></div>`;
   $("#q").oninput = (e) => { S.f.q = e.target.value; renderPaperRows(); };
-  $("#status").onchange = (e) => { S.f.status = e.target.value; renderPaperRows(); };
   $("#bulkUpload").onclick = bulkUpload;
   $("#bulkDownload").onclick = bulkDownloadBySignature;
-  $("#quickDump").onclick = quickDump;
+  $("#bulkSqccf").onclick = () => bulkStep("sqccf_processed");
+  $("#bulkCc").onclick = () => bulkStep("cadet_cc_initialed");
+  $("#quickDump").onclick = syncMode() ? runSync : quickDump;
   $$("[data-seg]").forEach((b) => (b.onclick = () => {
     S.f[b.dataset.seg] = b.dataset.v;
     $$(`[data-seg="${b.dataset.seg}"]`).forEach((x) => x.setAttribute("aria-pressed", x === b));
@@ -564,26 +569,84 @@ function viewPaperwork() {
   renderPaperRows();
 }
 
+// ---- filters. Every dropdown shows how many forms each choice would leave, given the *other*
+// filters, so a choice that would empty the list is never a surprise.
+const FILTER_OFF = { q: "", type: "all", pn: "all", step: "all", attn: "all", tracker: "all", reason: "all", year: "all", month: "all" };
+const firstOpen = (f) => (f.parsed ? FLAGS.find(([k]) => f.record[k] === false)?.[0] ?? "complete" : null);
+const reasonOf = (f) => (f.record?.reason_category || "").trim() || "Unspecified";
+const yearsOf = (f) => String(f.record?.class_year || "").split(",").map((y) => y.trim()).filter(Boolean);
+const monthOf = (f) => (f.record?.date_iso || "").slice(0, 7) || "none";
+const monthLabel = (k) => (k === "none" ? "No date" : `${MONTHS[+k.slice(5) - 1]} ${k.slice(0, 4)}`);
+const attnOf = (f) => (f.needs_review ? "review" : isIncomplete(f) ? "incomplete" : "clean");
+
+function matchesFilters(f, F, skip = "") {
+  const r = f.record || {};
+  const q = F.q.trim().toLowerCase();
+  if (skip !== "type" && F.type !== "all" && r.form_type !== F.type) return false;
+  if (skip !== "pn" && F.pn !== "all" && r.pos_neg !== F.pn) return false;
+  if (skip !== "step" && F.step !== "all") {
+    const st = firstOpen(f);
+    if (F.step === "open" ? !st || st === "complete" : st !== F.step) return false;
+  }
+  if (skip !== "attn" && F.attn !== "all") {
+    const a = attnOf(f);
+    if (F.attn === "needs" ? a === "clean" : a !== F.attn) return false;
+  }
+  if (skip !== "tracker" && F.tracker !== "all" && (F.tracker === "logged" ? !f.logged : f.logged || !f.parsed)) return false;
+  if (skip !== "reason" && F.reason !== "all" && reasonOf(f) !== F.reason) return false;
+  if (skip !== "year" && F.year !== "all" && !yearsOf(f).includes(F.year)) return false;
+  if (skip !== "month" && F.month !== "all" && monthOf(f) !== F.month) return false;
+  if (q) {
+    const hay = [f.filename, r.recipients, r.reason_category, r.reason_details, r.issuer, r.class_year, f.notes].join(" ").toLowerCase();
+    if (!q.split(/\s+/).every((t) => hay.includes(t))) return false;
+  }
+  return true;
+}
+
+function renderFilters() {
+  const el = $("#filters");
+  if (!el) return;
+  const pool = (S.data.forms || []).filter((f) => !f.archived);
+  const facet = (key) => pool.filter((f) => matchesFilters(f, S.f, key));
+  const sel = (key, label, opts) => `<select class="select" data-filter="${key}" aria-label="${label}" ${S.f[key] !== "all" ? 'data-on="1"' : ""}>${opts
+    .filter(([v, , n]) => v === "all" || v === S.f[key] || n !== 0)
+    .map(([v, l, n]) => `<option value="${esc(v)}" ${S.f[key] === v ? "selected" : ""}>${v === "all" ? `${label}: any` : esc(l)}${n === undefined ? "" : ` (${n})`}</option>`).join("")}</select>`;
+  const count = (fn, list) => list.reduce((m, f) => { for (const k of fn(f)) m.set(k, (m.get(k) || 0) + 1); return m; }, new Map());
+  const stepF = facet("step");
+  const steps = [["all", "", stepF.length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
+    ...FLAGS.map(([k, short]) => [k, `Needs ${short} next`, stepF.filter((f) => firstOpen(f) === k).length]), ["complete", "Fully routed", stepF.filter((f) => firstOpen(f) === "complete").length]];
+  const attnF = facet("attn");
+  const attn = [["all", "", attnF.length], ["needs", "Needs attention", attnF.filter((f) => attnOf(f) !== "clean").length], ["review", "Needs review", attnF.filter((f) => attnOf(f) === "review").length],
+    ["incomplete", "Missing CDNA/Passes", attnF.filter((f) => attnOf(f) === "incomplete").length], ["clean", "Nothing to fix", attnF.filter((f) => attnOf(f) === "clean").length]];
+  const trF = facet("tracker");
+  const tracker = [["all", "", trF.length], ["unlogged", "Not in the tracker", trF.filter((f) => f.parsed && !f.logged).length], ["logged", "In the tracker", trF.filter((f) => f.logged).length]];
+  const rs = count((f) => [reasonOf(f)], facet("reason"));
+  const reasons = [["all", "", facet("reason").length], ...[...rs].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => [k, k, n])];
+  const ys = count(yearsOf, facet("year"));
+  const years = [["all", "", facet("year").length], ...[...ys].sort((a, b) => b[0].localeCompare(a[0])).map(([k, n]) => [k, `Class of ${k}`, n])];
+  const ms = count((f) => [monthOf(f)], facet("month"));
+  const months = [["all", "", facet("month").length], ...[...ms].sort((a, b) => (a[0] === "none") - (b[0] === "none") || b[0].localeCompare(a[0])).map(([k, n]) => [k, monthLabel(k), n])];
+  for (const [key, opts] of [["step", steps], ["attn", attn], ["tracker", tracker], ["reason", reasons], ["year", years], ["month", months]]) {
+    if (S.f[key] !== "all" && !opts.some(([v]) => v === S.f[key])) { S.f[key] = "all"; return renderPaperRows(); } // that choice no longer exists
+  }
+  const on = Object.keys(FILTER_OFF).some((k) => S.f[k] !== FILTER_OFF[k]);
+  el.innerHTML = `${sel("step", "Next step", steps)}${sel("attn", "Attention", attn)}${sel("tracker", "Tracker", tracker)}${sel("reason", "Reason", reasons)}${sel("year", "Class", years)}${sel("month", "Month", months)}
+    ${on ? `<button type="button" class="btn ghost small" id="clearFilters">${icon("x")}Clear filters</button>` : ""}<span class="spacer"></span><span id="countLbl" style="color:var(--muted);font-size:13px"></span>`;
+  $$("[data-filter]", el).forEach((x) => (x.onchange = () => { S.f[x.dataset.filter] = x.value; renderPaperRows(); }));
+  const clr = $("#clearFilters");
+  if (clr) {
+    clr.onclick = () => {
+      Object.assign(S.f, FILTER_OFF);
+      const q = $("#q");
+      if (q) q.value = "";
+      $$("[data-seg]").forEach((b) => b.setAttribute("aria-pressed", S.f[b.dataset.seg] === b.dataset.v));
+      renderPaperRows();
+    };
+  }
+}
+
 function filteredForms() {
-  const q = S.f.q.trim().toLowerCase();
-  let list = (S.data.forms || []).filter((f) => {
-    if (f.archived) return false;
-    const r = f.record || {};
-    if (S.f.type !== "all" && r.form_type !== S.f.type) return false;
-    if (S.f.pn !== "all" && r.pos_neg !== S.f.pn) return false;
-    const st = S.f.status;
-    if (st === "awaiting" && !awaiting(f)) return false;
-    if (st === "complete" && (!f.parsed || awaiting(f))) return false;
-    if (st === "review" && !f.needs_review) return false;
-    if (st === "incomplete" && !isIncomplete(f)) return false;
-    if (st === "unlogged" && (f.logged || !f.parsed)) return false;
-    if (st === "logged" && !f.logged) return false;
-    if (q) {
-      const hay = [f.filename, r.recipients, r.reason_category, r.reason_details, r.issuer, r.class_year, f.notes].join(" ").toLowerCase();
-      if (!q.split(/\s+/).every((t) => hay.includes(t))) return false;
-    }
-    return true;
-  });
+  let list = (S.data.forms || []).filter((f) => !f.archived && matchesFilters(f, S.f));
   const { key, dir } = S.sort;
   const val = (f) => key === "date" ? (f.record.date_iso || "") : key === "who" ? (f.record.recipients || f.filename).toLowerCase()
     : key === "type" ? (f.record.form_type || "") : key === "issuer" ? (f.record.issuer || "").toLowerCase() : "";
@@ -593,7 +656,9 @@ function filteredForms() {
 
 function renderPaperRows() {
   const list = filteredForms();
-  $("#countLbl").textContent = plural(list.length, "form");
+  renderFilters();
+  const total = (S.data.forms || []).filter((f) => !f.archived).length;
+  $("#countLbl").textContent = list.length === total ? plural(total, "form") : `${list.length} of ${plural(total, "form")}`;
   const th = (k, l) => `<th class="sortable" data-sort="${k}" aria-sort="${S.sort.key === k ? (S.sort.dir > 0 ? "ascending" : "descending") : "none"}">${l}${S.sort.key === k ? `<span class="arr">${S.sort.dir > 0 ? "↑" : "↓"}</span>` : ""}</th>`;
   if (!list.length) {
     $("#results").innerHTML = `<div class="panel"><div class="empty">${icon("search")}<h3>No paperwork matches</h3><p>Clear the search or pick a different filter.</p></div></div>`;
@@ -722,6 +787,8 @@ function detailHead(d) {
     </div></header>`;
 }
 
+const zoomOf = () => S.zoom[S.host === "review" ? "review" : "drawer"];
+
 function sheetPane(d) {
   const a = d.analysis || {};
   const renders = a.renders || [];
@@ -739,8 +806,10 @@ function sheetPane(d) {
   return `<div class="pager">
       ${renders.length > 1 ? `<div class="seg" role="group" aria-label="Page">${renders.map((r) => `<button type="button" data-page="${r.page}" aria-pressed="${r.page === cur.page}" title="${pageRole(r.page)}">Page ${r.page + 1}</button>`).join("")}</div>` : `<span>Page 1</span>`}
       <span>${renders.length > 1 ? esc(pageRole(cur.page)) : ""}</span><span class="spacer"></span>
+      <span class="seg" role="group" aria-label="Zoom">${[1, 1.5, 2].map((v) => `<button type="button" data-zoom="${v}" aria-pressed="${v === zoomOf()}" title="Preview size">${v === 1 ? "Fit" : v * 100 + "%"}</button>`).join("")}</span>
+      ${S.host === "review" ? `<button type="button" class="btn ghost small" data-wide aria-pressed="${S.wide}" title="Give the page the whole width of the card">${S.wide ? "Show fields" : "Expand preview"}</button>` : ""}
       <label><input class="chk" type="checkbox" id="boxToggle" ${S.boxes ? "checked" : ""}> Show detected fields</label></div>
-    <div class="sheet ${S.boxes ? "" : "nobox"}" style="aspect-ratio:${cur.w}/${cur.h}"><img src="closet://page/${d.id}/${cur.page}?v=${encodeURIComponent(d.parsed_at || "")}" alt="Page ${cur.page + 1} of ${esc(d.filename)}" loading="lazy">${boxes}</div>
+    <div class="sheet ${S.boxes ? "" : "nobox"}" style="aspect-ratio:${cur.w}/${cur.h};width:${zoomOf() * 100}%"><img src="closet://page/${d.id}/${cur.page}?v=${encodeURIComponent(d.parsed_at || "")}" alt="Page ${cur.page + 1} of ${esc(d.filename)}" loading="lazy">${boxes}</div>
     <div class="boxkey"><span><i style="background:rgba(207,174,107,.35);box-shadow:inset 0 0 0 1.5px #b08a32"></i>Filled</span>
       <span><i style="background:rgba(250,178,25,.3);box-shadow:inset 0 0 0 1.5px #d68c00"></i>Handwriting, needs a value</span>
       <span><i style="box-shadow:inset 0 0 0 1px rgba(60,90,140,.8)"></i>Empty</span>
@@ -775,6 +844,19 @@ function routeBig(d) {
     ${FLAGS.some(([k]) => (k in S.edit.overrides ? S.edit.overrides[k] !== null : d.record.overridden.includes(k))) ? '<button type="button" class="btn ghost small" data-act="resetflags">Use detected</button>' : ""}</div>`;
 }
 
+// One-click completion of a step on this form: the same initials/date the bulk buttons write, or
+// (AOC/AMT only, and only ever one form at a time) the unofficial "approved" stamp.
+function autoButtons(d) {
+  const r = d.record;
+  const dirty = isDirty();
+  const btn = (k, label, act, tip) => (r[k] === false
+    ? `<button class="btn small" type="button" data-act="${act}" ${dirty ? "disabled" : ""} data-tip="${esc(tip)}" title="${esc(dirty ? "Save your changes first" : tip)}">${icon("check")}${label}</button>` : "");
+  const html = btn("sqccf_processed", "Initial for SQ/CCF", "auto:sqccf_processed", "Write your SQ/CCF initials (and the date) into this form and mark the step done")
+    + btn("cadet_cc_initialed", "Initial for Cadet CC", "auto:cadet_cc_initialed", "Write the Cadet Commander initials and date into this form and mark the step done")
+    + btn("aoc_signed", "Mark AOC/AMT approved…", "auto:approve", "The AMT approved it but sent no signed copy: stamp it and mark the step done");
+  return html ? `<div class="auto-row"><span class="lbl">Complete a step</span>${html}</div>` : "";
+}
+
 function recordTab(d) {
   const r = d.record;
   const ft = currentValue("form_type");
@@ -805,7 +887,7 @@ function recordTab(d) {
   const notes = S.edit.notes !== undefined ? S.edit.notes : d.notes;
   const logged = S.edit.logged !== undefined ? S.edit.logged : d.logged;
   return `${issuesBlock(d)}
-    <div class="section-title">Routing</div>${routeBig(d)}
+    <div class="section-title">Routing</div>${routeBig(d)}${autoButtons(d)}
     <div class="section-title">Tracker record <span class="hint">what gets pasted into the Conduct Log</span></div>
     <div class="fields">${fields}
       <div class="field wide"><label>Notes</label><textarea class="input" data-notes rows="2" placeholder="Private notes, not exported">${esc(notes)}</textarea></div>
@@ -919,6 +1001,7 @@ document.addEventListener("keydown", (e) => {
 function refreshSaveBar(root) {
   const old = $(".d-foot, .review-actions", root);
   if (old) { old.outerHTML = saveBar(); bindActs(root); }
+  $$(".auto-row .btn", root).forEach((b) => { b.disabled = isDirty(); b.title = isDirty() ? "Save your changes first" : b.dataset.tip || ""; });
 }
 
 function bindDetail(root) {
@@ -992,6 +1075,20 @@ function bindDetail(root) {
   bindDetailLeft(root);
 }
 function bindDetailLeft(root) {
+  const wide = $("[data-wide]", root);
+  if (wide) wide.onclick = () => {
+    S.wide = !S.wide;
+    wide.setAttribute("aria-pressed", S.wide);
+    wide.textContent = S.wide ? "Show fields" : "Expand preview";
+    $(".review-layout")?.classList.toggle("wide", S.wide);
+    $(".review-card", root)?.classList.toggle("wide", S.wide);
+  };
+  $$("[data-zoom]", root).forEach((b) => (b.onclick = () => {
+    S.zoom[S.host === "review" ? "review" : "drawer"] = +b.dataset.zoom;
+    $$("[data-zoom]", root).forEach((x) => x.setAttribute("aria-pressed", x === b));
+    const sh = $(".sheet", root);
+    if (sh) sh.style.width = b.dataset.zoom * 100 + "%";
+  }));
   $$("[data-page]", root).forEach((b) => (b.onclick = () => { S.page = +b.dataset.page; rerenderDetail(); }));
   const bt = $("#boxToggle", root);
   if (bt) bt.onchange = () => { S.boxes = bt.checked; $(".sheet", root).classList.toggle("nobox", !S.boxes); };
@@ -1018,6 +1115,7 @@ async function act(a) {
   if (a === "discard") { S.edit = blankEdit(); rerenderDetail(); return; }
   if (a === "save") return save(false);
   if (a === "savereview") return save(true);
+  if (a.startsWith("auto:")) return autoProcess(a.slice(5));
   if (a === "resetflags") {
     FLAGS.forEach(([k]) => { if (d.record.overridden.includes(k)) S.edit.overrides[k] = null; else delete S.edit.overrides[k]; });
     rerenderDetail();
@@ -1164,20 +1262,30 @@ function viewReview() {
   const incomplete = all.filter((f) => !f.needs_review && isIncomplete(f));
   const queue = [...waiting, ...incomplete];
   const done = all.filter((f) => f.flagged && f.reviewed && !isIncomplete(f));
-  if (!queue.length && !done.length) {
+  const syncItems = syncReviewItems();
+  if (!queue.length && !done.length && !syncItems.length) {
     $("#main").innerHTML = head("Review", "Forms that don't match their template closely enough to trust, and positive F10s still missing CDNA or Passes.") + `
       <div class="panel"><div class="empty">${icon("inbox0")}<h3>Nothing to review</h3><p>Every form matched its template and every positive F10 has CDNA and Passes. Anything with extra pages, missing fields, a scan, a filename without Pos/Neg, or missing CDNA/Passes will show up here.</p></div></div>`;
     closeDetail();
     return;
   }
-  if (!S.reviewId || !all.some((f) => f.id === S.reviewId)) S.reviewId = (queue[0] || done[0]).id;
+  const isSync = (id) => typeof id === "string" && id.startsWith("sync:");
+  const valid = isSync(S.reviewId) ? syncItems.some((p) => "sync:" + p.token === S.reviewId) : all.some((f) => f.id === S.reviewId);
+  if (!S.reviewId || !valid) S.reviewId = syncItems.length ? "sync:" + syncItems[0].token : (queue[0] || done[0]).id;
   const item = (f) => `<button type="button" data-rid="${f.id}" aria-current="${f.id === S.reviewId}">
       <div class="t">${whoLine(f.record || {}, f.filename)}</div><div class="s">${esc(f.filename)}</div>
       ${f.needs_review ? `<div class="why">${esc((f.issues.find((i) => i.level === "review") || {}).text || "")}</div>`
         : isIncomplete(f) ? `<div class="why" style="color:#ebc673">Positive F10 missing ${esc(f.incomplete.join(" and "))}</div>`
         : `<div class="s" style="color:var(--good)">Reviewed ${esc(fmtStamp(f.reviewed_at))}</div>`}</button>`;
-  $("#main").innerHTML = head("Review", `${queue.length ? plural(queue.length, "form needs", "forms need") + " a look." : "The queue is clear."} Your corrections are saved with the form, and a reviewed form doesn't come back to the queue.`) + `
-    <div class="review-layout"><nav class="queue" aria-label="Review queue">
+  const syncItem = (p) => {
+    const f = (S.data.forms || []).find((x) => x.id === p.review_id);
+    return `<button type="button" data-sid="${p.token}" aria-current="${"sync:" + p.token === S.reviewId}">
+      <div class="t">${esc(p.filename)}</div><div class="s">${f ? "Matched to " + esc(f.filename) : "Check the match"}</div><div class="why" style="color:#ebc673">Pulled by sync: compare it with the form</div></button>`;
+  };
+  const todo = queue.length + syncItems.length;
+  $("#main").innerHTML = head("Review", `${todo ? plural(todo, "form needs", "forms need") + " a look." : "The queue is clear."} Your corrections are saved with the form, and a reviewed form doesn't come back to the queue.`) + `
+    <div class="review-layout ${S.wide ? "wide" : ""}"><nav class="queue" aria-label="Review queue">
+      ${syncItems.length ? `<div class="group">Sync matches to check (${syncItems.length})</div>${syncItems.map(syncItem).join("")}` : ""}
       ${waiting.length ? `<div class="group">Needs review (${waiting.length})</div>${waiting.map(item).join("")}` : ""}
       ${incomplete.length ? `<div class="group">Incomplete (${incomplete.length})</div>${incomplete.map(item).join("")}` : ""}
       ${done.length ? `<div class="group">Reviewed (${done.length})</div>${done.map(item).join("")}` : ""}
@@ -1186,9 +1294,21 @@ function viewReview() {
     if (!(await okToDiscard())) return;
     S.edit = null;
     S.reviewId = b.dataset.rid;
-    $$("[data-rid]").forEach((x) => x.setAttribute("aria-current", x === b));
+    $$("[data-rid],[data-sid]").forEach((x) => x.setAttribute("aria-current", x === b));
     openForm(S.reviewId, { host: "review" });
   }));
+  $$("[data-sid]").forEach((b) => (b.onclick = async () => {
+    if (!(await okToDiscard())) return;
+    closeDetail();
+    S.reviewId = "sync:" + b.dataset.sid;
+    $$("[data-rid],[data-sid]").forEach((x) => x.setAttribute("aria-current", x === b));
+    renderSyncReview(b.dataset.sid);
+  }));
+  if (isSync(S.reviewId)) {
+    if (S.detail || S.host) closeDetail();
+    renderSyncReview(S.reviewId.slice(5));
+    return;
+  }
   if (S.host === "drawer") closeDetail();
   if (S.detail && S.detail.id === S.reviewId && S.host === "review") {
     renderReviewPane();
@@ -1200,7 +1320,7 @@ function renderReviewPane() {
   if (!pane || !S.detail) return;
   if (!S.edit) S.edit = blankEdit();
   const scroll = $(".d-right", pane)?.scrollTop || 0;
-  pane.innerHTML = `<div class="review-card">${detailHead(S.detail)}${detailInner(S.detail)}${saveBar()}</div>`;
+  pane.innerHTML = `<div class="review-card ${S.wide ? "wide" : ""}">${detailHead(S.detail)}${detailInner(S.detail)}${saveBar()}</div>`;
   const r = $(".d-right", pane);
   if (r) r.scrollTop = scroll;
   bindDetail(pane);
@@ -1355,6 +1475,11 @@ function viewSettings() {
       ${row("Pos/Neg labels", "Written in the Pos/Neg column.", `<div class="pair"><input class="input" data-set="pos_label" value="${esc(s.pos_label)}" aria-label="Positive label"><input class="input" data-set="neg_label" value="${esc(s.neg_label)}" aria-label="Negative label"></div>`)}
       ${row("Month column", "How the Month column is written.", `<select class="select" data-set="month_format">${[["name", "September"], ["short", "Sep"], ["name_year", "September 2026"], ["iso", "2026-09"], ["number", "9"]].map(([v, l]) => `<option value="${v}" ${s.month_format === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
     </div></section>
+    <section class="panel"><div class="panel-head"><h2>Bulk initials</h2><span class="sub">for the SQ/CCF and Cadet CC buttons on Paperwork</span></div><div class="panel-body">
+      ${row("SQ/CCF initials", "Entered once and remembered. Written into the SQ/CCF initials box when you use the SQ/CCF initials button.", `<input class="input" maxlength="8" data-set="bulk_initials.sqccf_processed" value="${esc(s.bulk_initials?.sqccf_processed || "")}" aria-label="SQ/CCF initials">`)}
+      ${row("Fill in today's date for SQ/CCF", "The SQ/CCF button also writes today's date in the log-in date box when it's empty. A date already on the form is never changed.", `<select class="select" data-set="first_shirt_fill_date" data-bool="1">${[["1", "Yes, fill it in"], ["0", "No, initials only"]].map(([v, l]) => `<option value="${v}" ${(s.first_shirt_fill_date ? "1" : "0") === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+      ${row("Cadet Commander initials", "Entered once and remembered. The Cadet CC button also dates the box (Section V, box 3) with today's date.", `<input class="input" maxlength="8" data-set="bulk_initials.cadet_cc_initialed" value="${esc(s.bulk_initials?.cadet_cc_initialed || "")}" aria-label="Cadet Commander initials">`)}
+    </div></section>
     <section class="panel"><div class="panel-head"><h2>Reading forms</h2></div><div class="panel-body">
       ${row("AF 174 commander block", "Whether the Commander's Comments block on an AF 174 counts as the AOC/AMT signature.", `<select class="select" data-set="f174_commander_role">${[["aoc_signed", "Counts as AOC/AMT"], ["none", "Doesn't count"]].map(([v, l]) => `<option value="${v}" ${s.f174_commander_role === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
       ${row("Position tolerance", "A field counts as matching the template when every edge is within this many points (1 pt ≈ 1 px at 72 dpi). Changing it re-reads every form.", `<input class="input" type="number" min="2" max="40" step="1" data-set="position_tolerance_pt" value="${esc(s.position_tolerance_pt)}">`)}
@@ -1364,10 +1489,27 @@ function viewSettings() {
       ${row("Clear metadata and rescan", "Forgets everything closet has recorded and reads every PDF in the dump folder again from scratch. This erases your edits, reviews, signatures set by hand, archive choices, and “logged” marks. Settings are kept, and the PDFs themselves are never touched.",
         `<button class="btn" type="button" id="resetAll" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("refresh")}Clear metadata and rescan</button>`)}
     </div></section>
+    <section class="panel"><div class="panel-head"><h2>Quick dump and sync</h2><span class="sub">how paperwork gets out for signatures</span></div><div class="panel-body">
+      ${row("Mode", "Quick dump copies every form into one folder, sorted by the next step it needs. Sync gives each step its own send and returned folders: pressing Sync pulls signed copies back in, then sends everything out again.",
+        `<select class="select" data-set="dump_mode">${[["quick", "Quick dump"], ["sync", "Sync"]].map(([v, l]) => `<option value="${v}" ${s.dump_mode === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+      ${row("Combined print packet", "Also write one printable PDF (an index sheet plus every form waiting on AOC/AMT) into the AOC/AMT folder.",
+        `<select class="select" data-set="print_packet" data-bool="1">${[["0", "Off"], ["1", "On"]].map(([v, l]) => `<option value="${v}" ${(s.print_packet ? "1" : "0") === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+      ${s.dump_mode === "sync" ? `<p class="sync-note">Sync has been on since ${esc(fmtStamp(S.data.sync?.since) || "just now")}: only files added to a returned folder after that are pulled${S.data.sync?.last_sync ? `. Last sync ${esc(fmtStamp(S.data.sync.last_sync))}` : ""}. A step with no folder is skipped. closet only ever removes copies it put in a send folder itself.</p>` : ""}
+    </div></section>
+    ${s.dump_mode === "sync" ? `<section class="panel"><div class="panel-head"><h2>Sync folders</h2><span class="sub">send = copies for signing, returned = signed copies come back</span></div><div class="panel-body">
+      ${SYNC_STEPS().map(([key, name, desc, hasPush, hasPull]) => {
+        const cell = (dir, label) => {
+          const path = s.sync_folders?.[key]?.[dir] || "";
+          return `<div class="sf"><span class="sf-l">${label}</span><div class="path">${path ? esc(path) : '<span class="dim">Not set, so this is skipped</span>'}</div>
+            <div class="pair"><button class="btn small" type="button" data-sfc="${key}|${dir}">${icon("folder")}${path ? "Change…" : "Choose…"}</button>${path ? `<button class="btn small ghost" type="button" data-sfx="${key}|${dir}">Clear</button>` : ""}</div></div>`;
+        };
+        return row(esc(name), esc(desc), (hasPush ? cell("push", "Send") : "") + (hasPull ? cell("pull", "Returned") : ""));
+      }).join("")}
+    </div></section>` : ""}
     <section class="panel"><div class="panel-head"><h2>Folders</h2></div><div class="panel-body">
       ${row("Dump folder", "Where closet keeps your paperwork. By default it's inside the app's data folder, so you never need to open it: add PDFs with Add files or by dragging them onto the window. Nothing is ever moved or changed.",
         `<div class="path">${esc(S.data.dump_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="dumpOpen">${icon("folder")}Open</button><button class="btn small" type="button" id="dumpChoose">Change…</button></div>`)}
-      ${row("Quick dump folder", "Where Quick dump writes its sorted folders and the AOC/AMT print packet. Copies only; each run refreshes the five step folders.",
+      ${s.dump_mode === "sync" ? "" : row("Quick dump folder", "Where Quick dump writes its sorted folders and the AOC/AMT print packet. Copies only; each run refreshes the five step folders.",
         `<div class="path">${esc(S.data.quick_dump_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="quickOpen">${icon("folder")}Open</button><button class="btn small" type="button" id="quickChoose">Change…</button></div>`)}
       ${row("Metadata folder", "Cached reads, page images, and your edits. It sits next to the dump folder; back both up together.",
         `<div class="path">${esc(S.data.meta_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="metaOpen">${icon("folder")}Open</button></div>`)}
@@ -1376,11 +1518,21 @@ function viewSettings() {
   closet.updates.state().then(renderUpdates);
   $("#dumpOpen").onclick = () => closet.openFolder("dump");
   $("#metaOpen").onclick = () => closet.openFolder("meta");
-  $("#quickOpen").onclick = () => closet.openFolder("quickdump");
-  $("#quickChoose").onclick = async () => {
+  if ($("#quickOpen")) $("#quickOpen").onclick = () => closet.openFolder("quickdump");
+  if ($("#quickChoose")) $("#quickChoose").onclick = async () => {
     const dir = await closet.chooseQuickDumpFolder();
     if (dir) { toast(`Quick dump will use ${dir}`); await load(); }
   };
+  $$("[data-sfc]").forEach((b) => (b.onclick = async () => {
+    const [key, dir] = b.dataset.sfc.split("|");
+    const r = await closet.chooseSyncFolder(key, dir);
+    if (r?.ok) { toast("Folder saved"); await load(); } else if (r?.error) toast(r.error, true);
+  }));
+  $$("[data-sfx]").forEach((b) => (b.onclick = async () => {
+    const [key, dir] = b.dataset.sfx.split("|");
+    const r = await closet.clearSyncFolder(key, dir);
+    if (r?.ok) { toast("Folder cleared. That step is skipped now."); await load(); } else if (r?.error) toast(r.error, true);
+  }));
   $("#dumpChoose").onclick = chooseDump;
   $("#resetAll").onclick = async () => {
     const all = (S.data.forms || []).filter((f) => !f.missing);
@@ -1410,7 +1562,7 @@ function viewSettings() {
   };
   $$("[data-set]").forEach((el) => (el.onchange = async () => {
     const path = el.dataset.set.split(".");
-    let v = el.type === "number" ? Number(el.value) : el.value;
+    let v = el.type === "number" ? Number(el.value) : el.dataset.bool ? el.value === "1" : el.value;
     const body = path.length === 2 ? { [path[0]]: { [path[1]]: v } } : { [path[0]]: v };
     try {
       await api("/api/settings", { method: "PUT", body });
@@ -1498,6 +1650,68 @@ async function bulkUpload() {
   await load();
 }
 
+// Initial every form still waiting on a step with the same initials, and date it, writing into the
+// PDFs themselves. The initials are remembered (Settings → Bulk initials) so this is one click.
+async function bulkStep(step, only = null) {
+  if (!only && !(await okToDiscard())) return;
+  let plan;
+  try { plan = await api(`/api/bulk-step?step=${step}${only ? `&ids=${only}` : ""}`); } catch (e) { toast(e.message, true); return; }
+  const n = plan.forms.length;
+  if (!n) { toast(only ? `This form can't be initialed for ${plan.label} right now (it may still be being read)` : `Nothing is waiting on ${plan.label}${plan.skipped ? ` (${plan.skipped} still being read)` : ""}`, Boolean(only)); return; }
+  const writes = plan.forms.reduce((a, f) => a + f.writes, 0);
+  const initials = await ask({
+    title: only ? `${plan.label}: initial this form?` : `${plan.label}: initial ${plural(n, "form")}?`,
+    message: `<p>The same initials go in the box on ${only ? "this form" : "every form still waiting on this step"}${plan.fill_dates ? `, and today's date in the date box${step === "sqccf_processed" ? " (changeable in Settings)" : ""}` : ""}. Where a form has no fillable box there, a text box is placed on top of the spot. The PDFs are updated (the originals are kept in the metadata folder) and the step is marked done.</p>
+      <p class="dim">${plural(n, "form")}, ${plural(writes, "entry", "entries")} to write.${plan.skipped ? ` ${plural(plan.skipped, "form")} still being read will be skipped.` : ""}${plan.fill_dates ? "" : " Dates are not being filled."}</p>`,
+    input: { value: plan.initials, placeholder: "Initials", validate: (t) => (!t ? "Enter the initials to use." : t.length > 8 ? "Eight characters at most." : /[^ -~]/.test(t) ? "Plain letters and numbers only." : "") },
+    choices: [{ label: "Cancel", value: null }, { label: only ? "Initial this form" : `Initial ${plural(n, "form")}`, value: true, primary: true }],
+  });
+  if (!initials) return;
+  const btn = only ? null : $(step === "sqccf_processed" ? "#bulkSqccf" : "#bulkCc");
+  if (btn) btn.disabled = true;
+  try {
+    toast(`Writing into ${plural(n, "PDF")}…`);
+    const r = await api("/api/bulk-step", { method: "POST", body: { step, initials, ids: only ? [only] : undefined } });
+    toast(`${plural(r.done.length, "form")} initialed${r.failed.length ? `, ${r.failed.length} couldn't be` : ""}.`, r.failed.length > 0);
+    await load();
+    if (only && S.detail?.id === only) openForm(only, { keepPage: true, silent: true, host: S.host });
+    if (r.failed.length) {
+      await ask({
+        wide: true, title: "Some forms couldn't be initialed",
+        message: `<p>These were left exactly as they were and still need ${esc(r.label)}:</p><ul class="issue-list">${r.failed.map((f) => `<li><span class="mono">${esc(f.filename)}</span><br><span class="dim">${esc(f.error)}</span></li>`).join("")}</ul>`,
+        choices: [{ label: "OK", value: true, primary: true }],
+      });
+    }
+  } catch (e) {
+    toast("Couldn't initial the forms: " + e.message, true);
+  } finally {
+    const b = only ? null : $(step === "sqccf_processed" ? "#bulkSqccf" : "#bulkCc");
+    if (b) b.disabled = false;
+  }
+}
+
+async function autoProcess(step) {
+  const d = S.detail;
+  if (!d) return;
+  if (isDirty()) { toast("Save your changes first, then complete the step", true); return; }
+  if (step !== "approve") return bulkStep(step, d.id);
+  const ok = await ask({
+    title: "Mark AOC/AMT approved?",
+    message: `<p>Use this when the AMT has told you this form is approved but didn't send a signed copy.</p>
+      <p>The empty AOC/AMT signature box is removed and this stamp goes in its place. The PDF is updated (the original is kept in the metadata folder) and the AOC/AMT step is marked done.${d.record.form_type === "F174" ? " The commander date is filled in too." : ""}</p>
+      <div class="stamp-demo"><small>Marked AOC/AMT approved by First Sergeant (unofficial)</small><b>AOC/AMT Approved</b></div>
+      <p class="dim">This is not a signature. It only records that you were told it's approved.</p>`,
+    choices: [{ label: "Cancel", value: null }, { label: "Apply stamp", value: true, primary: true }],
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/forms/${d.id}/approve-aoc`, { method: "POST" });
+    toast("Stamped and marked AOC/AMT approved");
+    await load();
+    if (S.detail?.id === d.id) openForm(d.id, { keepPage: true, silent: true, host: S.host });
+  } catch (e) { toast("Couldn't stamp it: " + e.message, true); }
+}
+
 // Copy every active form still missing a chosen signature into a folder the user picks.
 async function bulkDownloadBySignature() {
   const key = await ask({
@@ -1561,6 +1775,209 @@ document.addEventListener("keydown", (e) => {
     if (q) { e.preventDefault(); q.focus(); q.select(); }
   }
 });
+
+// ------------------------------------------------------------------ sync
+// Settings → "Quick dump" can be switched to Sync: each routing step gets a send folder (copies of
+// forms waiting on it) and a returned folder (signed copies come back). The Paperwork button then
+// pulls what came back, asks which form each file belongs to, clears closet's old copies, and
+// pushes everything out again. The engine is core/sync.js; this is the conversation with the person.
+const syncMode = () => S.data?.settings.dump_mode === "sync";
+const SYNC_STEPS = () => [
+  ...FLAGS.map(([k, short, long]) => [k, `Needs ${short}`, `Forms still waiting on: ${long}.`, true, true]),
+  ["complete", "Fully complete", "Forms with every step done. Pushed here; nothing is pulled back.", true, false],
+  ["intake", "New paperwork", "Pull new forms in from here (ones closet doesn't have yet). Nothing is pushed.", false, true],
+];
+let syncBusy = false;
+
+function cropShot(p) {
+  if (!p.rect || !p.size || p.page === null) return "";
+  const [x0, y0, x1, y1] = p.rect;
+  const px = Math.max(0.08, (x1 - x0) * 0.35);
+  const py = 0.045;
+  const r = [Math.max(0, x0 - px), Math.max(0, y0 - py), Math.min(1, x1 + px), Math.min(1, y1 + py)];
+  const rw = r[2] - r[0];
+  const rh = r[3] - r[1];
+  const pct = (v) => `${(v * 100).toFixed(3)}%`;
+  return `<div class="shot" style="aspect-ratio:${(rw * p.size.w) / (rh * p.size.h)}">
+    <img src="closet://page/${p.id}/${p.page}?v=${encodeURIComponent(p.parsed_at || "")}" alt="The spot on the form where the field should be" style="width:${pct(1 / rw)};left:${pct(-r[0] / rw)};top:${pct(-r[1] / rh)}">
+    <i style="left:${pct((x0 - r[0]) / rw)};top:${pct((y0 - r[1]) / rh)};width:${pct((x1 - x0) / rw)};height:${pct((y1 - y0) / rh)}"></i></div>`;
+}
+
+function showModal(html, setup) {
+  return new Promise((resolve) => {
+    const prev = document.activeElement;
+    const scrim = document.createElement("div");
+    scrim.className = "modal-scrim";
+    scrim.innerHTML = html;
+    document.body.appendChild(scrim);
+    const done = (v) => { scrim.remove(); document.removeEventListener("keydown", onKey, true); prev?.focus?.(); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); } };
+    document.addEventListener("keydown", onKey, true);
+    setup(scrim, done);
+  });
+}
+
+// One row per pulled file: which form it belongs to (best guess first), or new / ignore, and a tick
+// to send the match to Review instead of applying it. Resolves with decisions, or null on cancel.
+function confirmPulled(items) {
+  const rows = items.map((it, i) => {
+    const sug = it.suggestion;
+    const opts = [...it.candidates.map((c) => `<option value="id:${c.id}" ${sug.action === "replace" && sug.id === c.id ? "selected" : ""}>${esc(`${c.filename}  (${Math.round(c.score * 100)}% match)`)}</option>`),
+      `<option value="new" ${sug.action === "new" ? "selected" : ""}>New paperwork (add it as a new form)</option>`, `<option value="ignore">Ignore this file</option>`].join("");
+    return `<tr data-i="${i}"><td><div class="who">${esc(it.filename)}</div><div class="sub">from ${esc(it.folder)}${it.error ? ` · <span style="color:#f0a3a3">${esc(it.error)}</span>` : ""}</div></td>
+      <td><select class="select" data-pick>${opts}</select><div class="sub why" data-why></div></td>
+      <td style="text-align:center"><input class="chk" type="checkbox" data-rev aria-label="Needs further review: ${esc(it.filename)}" ${sug.action === "replace" && sug.review ? "checked" : ""}></td></tr>`;
+  }).join("");
+  return showModal(`<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <h2 id="mTitle">Match returned paperwork</h2>
+    <div class="modal-msg"><p>${plural(items.length, "file")} came back since the last sync. Check which form each one is. A match goes in as an updated copy of that form, like <b>Upload updated copy</b>. Tick <b>Review</b> to look at one more closely in the Review tab first (it's held back from the next push until you decide).</p></div>
+    <div class="table-wrap modal-table"><table class="t"><thead><tr><th>File</th><th>Belongs to</th><th>Review</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="modal-actions"><button type="button" class="btn ghost" data-x="cancel">Cancel sync</button><button type="button" class="btn primary" data-x="ok">${icon("check")}Confirm</button></div></div>`, (scrim, done) => {
+    $$("tr[data-i]", scrim).forEach((tr) => {
+      const it = items[+tr.dataset.i];
+      const sel = $("[data-pick]", tr);
+      const rev = $("[data-rev]", tr);
+      const sync = () => {
+        const isForm = sel.value.startsWith("id:");
+        rev.disabled = !isForm;
+        if (!isForm) rev.checked = false;
+        const c = it.candidates.find((x) => "id:" + x.id === sel.value);
+        $("[data-why]", tr).textContent = c ? c.why.join("; ") : sel.value === "new" ? "Added to the dump folder as a new form." : "Left where it is and not looked at again.";
+      };
+      sel.onchange = sync;
+      sync();
+    });
+    $("[data-x=cancel]", scrim).onclick = () => done(null);
+    $("[data-x=ok]", scrim).onclick = () => done($$("tr[data-i]", scrim).map((tr) => {
+      const it = items[+tr.dataset.i];
+      const v = $("[data-pick]", tr).value;
+      return v.startsWith("id:") ? { token: it.token, action: "replace", id: v.slice(3), review: $("[data-rev]", tr).checked } : { token: it.token, action: v };
+    }));
+    setTimeout(() => $("[data-x=ok]", scrim).focus(), 30);
+  });
+}
+
+async function handleSignProblem(p, rep) {
+  const who = p.recipients || p.filename;
+  const canAdd = p.fixable && !p.blocked;
+  const cannot = p.blocked || p.fix_error || (!p.fixable ? "closet can't add a field to this one." : "");
+  const choice = await ask({
+    wide: true,
+    title: `${who}: the ${p.slot || "signature"} field can't be used`,
+    message: `${cropShot(p)}<p style="margin-top:12px">${esc(p.filename)} needs <b>${esc(p.step_label)}</b> next, but the spot above won't work in Adobe:</p>
+      <ul class="issue-list">${p.issues.map((i) => `<li>${esc(i.text)}</li>`).join("")}</ul>
+      ${cannot ? `<p class="dim">${esc(cannot)}</p>` : ""}
+      <p class="dim">It isn't being sent until you choose. <b>Already signed</b> records the step as done (say the signature was flattened into the page) and moves it on. <b>Add a new field</b> puts one on top of that spot in the copy that gets sent; your stored file isn't changed.</p>`,
+    choices: [{ label: "Skip for now", value: null }, { label: "Send as it is", value: "as-is" },
+      ...(canAdd ? [{ label: "Add a new field", value: "add-field", primary: true }] : []), { label: "Already signed", value: "signed", primary: !canAdd }],
+  });
+  if (!choice) return;
+  try {
+    const r = await api("/api/sync/fix", { method: "POST", body: { id: p.id, step: p.step, action: choice } });
+    for (const k of ["leftovers", "blocked", "errors"]) rep[k].push(...r[k]);
+    for (const [k, n] of Object.entries(r.pushed)) rep.pushed[k] = (rep.pushed[k] || 0) + n;
+    const again = r.problems.find((x) => x.id === p.id);
+    if (again) toast(`${who} still can't be sent${again.fix_error ? `: ${again.fix_error}` : ""}`, true);
+    else rep.problems = rep.problems.filter((x) => x !== p);
+  } catch (e) { toast(`Couldn't apply that: ${e.message}`, true); }
+}
+
+async function syncNotices(rep) {
+  const left = [...new Map(rep.leftovers.map((l) => [l.file, l])).values()];
+  const lines = [
+    ...left.map((l) => `<li><span class="mono">${esc(l.file)}</span><br><span class="dim">${esc(l.why)}</span></li>`),
+    ...rep.blocked.filter((b) => !left.some((l) => l.file === b.file)).map((b) => `<li><span class="mono">${esc(b.file)}</span><br><span class="dim">already there, so ${esc(b.filename)} wasn't copied over it</span></li>`),
+  ];
+  if (!lines.length) return;
+  await ask({
+    wide: true, title: "Files left alone",
+    message: `<p>closet only removes the copies it put there itself. ${plural(lines.length, "file was", "files were")} left as they are in the send folders. Move or delete them yourself if they're not needed; a copy that was blocked by one is sent next sync.</p><ul class="issue-list">${lines.slice(0, 15).join("")}</ul>${lines.length > 15 ? `<p class="dim">…and ${lines.length - 15} more.</p>` : ""}`,
+    choices: [{ label: "OK", value: true, primary: true }],
+  });
+}
+
+async function runSync() {
+  if (syncBusy) return;
+  if (!(await okToDiscard())) return;
+  syncBusy = true;
+  document.body.dataset.syncing = "1";
+  const btn = $("#quickDump");
+  if (btn) btn.disabled = true;
+  try {
+    toast("Syncing…");
+    const pulled = await api("/api/sync/pull", { method: "POST" });
+    pulled.errors.forEach((e) => toast(e, true));
+    let note = "";
+    if (pulled.items.length) {
+      const decisions = await confirmPulled(pulled.items);
+      if (decisions === null) { toast("Sync cancelled. Nothing was changed or sent."); await load(); return; }
+      const r = await api("/api/sync/resolve", { method: "POST", body: { decisions } });
+      r.errors.forEach((e) => toast(e, true));
+      const bits = [r.replaced.length && `${plural(r.replaced.length, "form")} updated`, r.added.length && `${r.added.length} new`, r.review && `${r.review} to Review`].filter(Boolean);
+      note = bits.length ? `${bits.join(", ")}. ` : "";
+    }
+    const rep = await api("/api/sync/push", { method: "POST" });
+    await load();
+    for (const p of [...rep.problems]) await handleSignProblem(p, rep);
+    rep.errors.forEach((e) => toast(e, true));
+    const sent = Object.values(rep.pushed).reduce((a, b) => a + b, 0);
+    toast(`${note}Sent ${plural(sent, "form")}${rep.problems.length ? `, ${rep.problems.length} held back` : ""}${rep.held.length ? `, ${rep.held.length} waiting in Review` : ""}.`);
+    await load();
+    await syncNotices(rep);
+  } catch (e) {
+    toast("Sync failed: " + e.message, true);
+  } finally {
+    syncBusy = false;
+    delete document.body.dataset.syncing;
+    const b = $("#quickDump");
+    if (b) b.disabled = false;
+  }
+}
+
+// Review tab: a pulled file the person wanted a closer look at, beside the form it might replace.
+async function renderSyncReview(token) {
+  const pane = $("#reviewPane");
+  let p;
+  try { p = await api(`/api/sync/pending/${token}`); } catch { S.reviewId = null; renderView(); return; }
+  const forms = active().filter((f) => !p.candidates.some((c) => c.id === f.id));
+  let formId = S.syncPick?.token === token ? S.syncPick.id : p.review_id;
+  const sheet = (src, r) => `<div class="sheet nobox" style="aspect-ratio:${r.w}/${r.h};width:${S.zoom.review * 100}%"><img src="${src}" alt=""></div>`;
+  const draw = async () => {
+    let d = null;
+    try { d = formId ? await api(`/api/forms/${formId}`) : null; } catch { /* the form went away */ }
+    const z = S.zoom.review;
+    const pages = (renders, mk) => (renders || []).map((r) => `<div class="pg-label">Page ${r.page + 1}</div>${sheet(mk(r), r)}`).join("") || '<div class="empty">No preview</div>';
+    const opts = [...p.candidates.map((c) => [c.id, `${c.filename} (${Math.round(c.score * 100)}% match)`]), ...forms.map((f) => [f.id, f.filename])];
+    pane.innerHTML = `<div class="review-card sync-compare">
+      <header class="d-head"><div style="min-width:0"><h2>${esc(p.filename)}</h2><div class="fn">Came back in the ${esc(p.folder)} folder, ${esc(fmtStamp(p.pulled_at))}</div>
+        <div class="chips"><span class="chip warn">Check this match</span>${p.error ? `<span class="chip crit">${esc(p.error)}</span>` : ""}</div></div><div class="spacer"></div>
+        <div class="acts"><span class="seg" role="group" aria-label="Zoom">${[1, 1.5, 2].map((v) => `<button type="button" data-z="${v}" aria-pressed="${v === z}">${v === 1 ? "Fit" : v * 100 + "%"}</button>`).join("")}</span>
+        <button type="button" class="btn ghost small" data-wide title="Hide the queue so each page gets more room">${S.wide ? "Show list" : "Expand preview"}</button></div></header>
+      <div class="cmp-pick"><label for="syncPick">This file belongs to</label><select class="select" id="syncPick">
+        ${opts.map(([id, l]) => `<option value="${id}" ${id === formId ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+        <span class="dim">${esc((p.candidates.find((c) => c.id === formId)?.why || []).join("; "))}</span></div>
+      <div class="d-body"><div class="d-pane d-left"><div class="cmp-title">Pulled copy</div>${pages(p.analysis.renders, (r) => `closet://syncpage/${token}/${r.page}`)}</div>
+        <div class="d-pane d-left"><div class="cmp-title">${d ? `In closet: ${esc(d.filename)}` : "No form chosen"}</div>${d ? pages(d.analysis?.renders, (r) => `closet://page/${d.id}/${r.page}?v=${encodeURIComponent(d.parsed_at || "")}`) : ""}</div></div>
+      <div class="review-actions"><span class="note">Using the pulled copy replaces that form's PDF; your edits and history stay.</span>
+        <button class="btn ghost" type="button" data-s="ignore">Ignore file</button><button class="btn" type="button" data-s="new">Add as a new form</button>
+        <button class="btn primary" type="button" data-s="replace" ${d ? "" : "disabled"}>${icon("check")}Use as updated copy</button></div></div>`;
+    $("#syncPick", pane).onchange = (e) => { formId = e.target.value; S.syncPick = { token, id: formId }; draw(); };
+    $$("[data-z]", pane).forEach((b) => (b.onclick = () => { S.zoom.review = +b.dataset.z; draw(); }));
+    $("[data-wide]", pane).onclick = () => { S.wide = !S.wide; $(".review-layout")?.classList.toggle("wide", S.wide); draw(); };
+    $$("[data-s]", pane).forEach((b) => (b.onclick = async () => {
+      const action = b.dataset.s;
+      try {
+        const r = await api("/api/sync/resolve", { method: "POST", body: { decisions: [{ token, action, id: formId, review: false }] } });
+        if (r.errors.length) { toast(r.errors[0], true); return; }
+        toast(action === "replace" ? "Updated. Reading it again…" : action === "new" ? "Added as a new form" : "Ignored");
+        S.reviewId = null;
+        S.syncPick = null;
+        await load();
+      } catch (e) { toast(e.message, true); }
+    }));
+  };
+  await draw();
+}
 
 // ------------------------------------------------------------------ go
 (async () => {

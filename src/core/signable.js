@@ -12,7 +12,7 @@
 
 import zlib from "node:zlib";
 
-import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString } from "pdf-lib";
+import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, StandardFonts } from "pdf-lib";
 
 const N = (s) => PDFName.of(s);
 export const FIELD_PREFIX = "closet "; // fields closet adds are named "closet <step> <n>"
@@ -522,28 +522,27 @@ function serialize(obj) {
  *
  * @returns {Promise<{bytes: Buffer, name: string, mode: "incremental"|"rewrite"}>}
  */
-export async function addField(bytes, target, label = "field") {
+/** Load a PDF for editing and set up change tracking; throws when it can't be edited safely. */
+async function openPatch(bytes, what) {
   const buf = Buffer.from(bytes);
   const doc = await load(buf);
   const ctx = doc.context;
-  if (ctx.trailerInfo.Encrypt) throw new Error("The PDF is encrypted, so a field can't be added to it");
+  if (ctx.trailerInfo.Encrypt) throw new Error(`The PDF is encrypted, so ${what}`);
   const cat = doc.catalog;
   const rootRef = ctx.trailerInfo.Root;
   if (!(rootRef instanceof PDFRef)) throw new Error("The PDF has no document catalog");
   const perms0 = cat.lookup(N("Perms"));
-  if (perms0 instanceof PDFDict && docMdpLevel(ctx, perms0) !== null) throw new Error("The PDF is certified; adding a field would break the certification");
+  if (perms0 instanceof PDFDict && docMdpLevel(ctx, perms0) !== null) throw new Error("The PDF is certified; changing it would break the certification");
   const health = xrefHealth(buf);
   const af0 = cat.lookup(N("AcroForm"));
   const signed = af0 instanceof PDFDict && formFields(ctx, af0).some((f) => f.ftype === "Sig" && hasSignatureValue(f.dict.lookup(N("V"))));
   const rewrite = !health.ok;
   if (rewrite && signed) throw new Error("The PDF is damaged and already signed; rewriting it would invalidate those signatures");
-  const page = doc.getPages()[target.page];
-  if (!page) throw new Error("That page isn't in the PDF");
 
   // pdf-lib drops object streams and cross-reference streams when it loads a file, so its idea of
   // the largest object number can be too low; new objects must not reuse a number the file has.
   let maxNum = ctx.largestObjectNumber;
-  for (const m of buf.toString("latin1").matchAll(/(?:^|[\s>\]])(\d{1,7})\s+\d{1,5}\s+obj\b/g)) maxNum = Math.max(maxNum, Number(m[1]));
+  for (const m of buf.toString("latin1").matchAll(/(?:^|[\s>\]])(\d{1,7})\s+\d{1,5}\s+obj/g)) maxNum = Math.max(maxNum, Number(m[1]));
   for (const m of buf.subarray(Math.max(0, health.startxref ?? 0)).toString("latin1").matchAll(/\/Size\s+(\d+)/g)) maxNum = Math.max(maxNum, Number(m[1]) - 1);
   ctx.largestObjectNumber = maxNum;
   const before = maxNum;
@@ -554,6 +553,79 @@ export async function addField(bytes, target, label = "field") {
     const raw = owner.get(N(dictKey));
     return raw instanceof PDFRef ? raw : ownerRef;
   };
+  return { buf, doc, ctx, cat, rootRef, health, af0, rewrite, before, changed, touch, holderOf };
+}
+
+/** Write the edits: appended to the original bytes, or (damaged, unsigned file) a clean rewrite. */
+async function finishPatch({ buf, doc, ctx, health, rewrite, before, changed }) {
+  if (rewrite) {
+    const out = await doc.save({ useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false });
+    return { bytes: Buffer.from(out), mode: "rewrite" };
+  }
+
+  // ---- incremental update: changed + new objects, then a cross-reference section for just those
+  const objects = [...changed.values()];
+  for (const [ref] of ctx.enumerateIndirectObjects()) if (ref.objectNumber > before) objects.push(ref);
+  objects.sort((a, b) => a.objectNumber - b.objectNumber);
+  const parts = [buf, Buffer.from("\n", "latin1")];
+  let pos = buf.length + 1;
+  const offsets = new Map();
+  for (const ref of objects) {
+    const body = serialize(ctx.lookup(ref));
+    const head = Buffer.from(`${ref.objectNumber} ${ref.generationNumber} obj\n`, "latin1");
+    const tail = Buffer.from("\nendobj\n", "latin1");
+    offsets.set(ref.objectNumber, { pos, gen: ref.generationNumber });
+    parts.push(head, body, tail);
+    pos += head.length + body.length + tail.length;
+  }
+  const t = ctx.trailerInfo;
+  const extra = [["Root", t.Root], ["Info", t.Info], ["ID", t.ID]].filter(([, v]) => v);
+  const ser = (v) => serialize(v).toString("latin1");
+  const groups = (list) => {
+    const out = [];
+    for (const n of list) {
+      const last = out.at(-1);
+      if (last && last[0] + last[1] === n) last[1]++;
+      else out.push([n, 1]);
+    }
+    return out;
+  };
+  if (health.kind === "table") {
+    const nums = [...offsets.keys()].sort((a, b) => a - b);
+    let xref = "xref\n";
+    let i = 0;
+    for (const [start, count] of groups(nums)) {
+      xref += `${start} ${count}\n`;
+      for (let k = 0; k < count; k++, i++) {
+        const o = offsets.get(nums[i]);
+        xref += `${String(o.pos).padStart(10, "0")} ${String(o.gen).padStart(5, "0")} n\r\n`;
+      }
+    }
+    const size = Math.max(ctx.largestObjectNumber, before) + 1;
+    xref += `trailer\n<< /Size ${size} /Prev ${health.startxref}${extra.map(([k, v]) => ` /${k} ${ser(v)}`).join("")} >>\nstartxref\n${pos}\n%%EOF\n`;
+    parts.push(Buffer.from(xref, "latin1"));
+  } else {
+    const xrefNum = Math.max(ctx.largestObjectNumber, before) + 1;
+    offsets.set(xrefNum, { pos, gen: 0 });
+    const nums = [...offsets.keys()].sort((a, b) => a - b);
+    const rows = Buffer.alloc(nums.length * 7);
+    nums.forEach((n, i) => {
+      const o = offsets.get(n);
+      rows[i * 7] = 1;
+      rows.writeUInt32BE(o.pos, i * 7 + 1);
+      rows.writeUInt16BE(o.gen, i * 7 + 5);
+    });
+    const index = groups(nums).flat().join(" ");
+    const dict = `<< /Type /XRef /Size ${xrefNum + 1} /W [1 4 2] /Index [${index}] /Prev ${health.startxref}${extra.map(([k, v]) => ` /${k} ${ser(v)}`).join("")} /Length ${rows.length} >>`;
+    parts.push(Buffer.from(`${xrefNum} 0 obj\n${dict}\nstream\n`, "latin1"), rows, Buffer.from(`\nendstream\nendobj\nstartxref\n${pos}\n%%EOF\n`, "latin1"));
+  }
+  return { bytes: Buffer.concat(parts), mode: "incremental" };
+}
+
+export async function addField(bytes, target, label = "field") {
+  const { buf, doc, ctx, cat, rootRef, health, af0, rewrite, before, changed, touch, holderOf } = await openPatch(bytes, "a field can't be added to it");
+  const page = doc.getPages()[target.page];
+  if (!page) throw new Error("That page isn't in the PDF");
 
   const existing = new Set(af0 instanceof PDFDict ? formFields(ctx, af0).map((f) => f.name) : []);
   let name = `${FIELD_PREFIX}${label}`.replace(/\./g, " ");
@@ -650,67 +722,263 @@ export async function addField(bytes, target, label = "field") {
     cat.delete(N("NeedsRendering"));
     touch(rootRef);
   }
+  return { ...(await finishPatch({ buf, doc, ctx, health, rewrite, before, changed })), name };
+}
 
-  if (rewrite) {
-    const out = await doc.save({ useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false });
-    return { bytes: Buffer.from(out), name, mode: "rewrite" };
-  }
+// --------------------------------------------------------------------------- filling text in
 
-  // ---- incremental update: changed + new objects, then a cross-reference section for just those
-  const objects = [...changed.values()];
-  for (const [ref] of ctx.enumerateIndirectObjects()) if (ref.objectNumber > before) objects.push(ref);
-  objects.sort((a, b) => a.objectNumber - b.objectNumber);
-  const parts = [buf, Buffer.from("\n", "latin1")];
-  let pos = buf.length + 1;
-  const offsets = new Map();
-  for (const ref of objects) {
-    const body = serialize(ctx.lookup(ref));
-    const head = Buffer.from(`${ref.objectNumber} ${ref.generationNumber} obj\n`, "latin1");
-    const tail = Buffer.from("\nendobj\n", "latin1");
-    offsets.set(ref.objectNumber, { pos, gen: ref.generationNumber });
-    parts.push(head, body, tail);
-    pos += head.length + body.length + tail.length;
+/** The widget on a page that best covers a spot: { ref, dict, overlap } or null. */
+function widgetAt(ctx, page, g, rect) {
+  const annots = page.node.lookup(N("Annots"));
+  const found = [];
+  for (const ref of annots instanceof PDFArray ? annots.asArray() : []) {
+    const dict = ref instanceof PDFRef ? ctx.lookup(ref) : ref;
+    if (!(dict instanceof PDFDict) || text(dict.lookup(N("Subtype"))) !== "Widget") continue;
+    const r = nums(dict.lookup(N("Rect")));
+    if (!r || r.length < 4) continue;
+    const norm = toNorm(g, [Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])]);
+    found.push({ ref: ref instanceof PDFRef ? ref : null, dict, overlap: iou(norm, rect), inside: centerIn(norm, rect) || centerIn(rect, norm) });
   }
-  const t = ctx.trailerInfo;
-  const extra = [["Root", t.Root], ["Info", t.Info], ["ID", t.ID]].filter(([, v]) => v);
-  const ser = (v) => serialize(v).toString("latin1");
-  const groups = (list) => {
-    const out = [];
-    for (const n of list) {
-      const last = out.at(-1);
-      if (last && last[0] + last[1] === n) last[1]++;
-      else out.push([n, 1]);
+  return found.filter((w) => w.overlap >= 0.5).at(-1) || found.filter((w) => w.inside || w.overlap >= 0.25).sort((a, b) => b.overlap - a.overlap)[0] || null;
+}
+
+/** Can closet type into this widget's field instead of laying a new box on top? */
+function usableTextField(w, ctx, len) {
+  if (!w?.ref) return null;
+  const chain = chainOf(ctx, w.ref, w.dict);
+  const ft = inherited(chain, "FT");
+  if (!(ft instanceof PDFName) || ft.decodeText() !== "Tx") return null;
+  if ((num(inherited(chain, "Ff")) ?? 0) & (1 | 4096 | 8192 | 1 << 24)) return null; // read-only, multiline, password, comb
+  if ((num(w.dict.lookup(N("F"))) ?? 0) & (2 | 32 | 64)) return null; // hidden / no-view / read-only box
+  const maxLen = num(inherited(chain, "MaxLen"));
+  if (maxLen !== null && maxLen < len) return null;
+  const term = chain.find(({ dict }) => dict.get(N("T")) !== undefined);
+  if (!term?.ref) return null;
+  const kids = term.dict.lookup(N("Kids"));
+  if (kids instanceof PDFArray && kids.size() > 1) return null; // one field, several boxes: typing would fill them all
+  if (text(inherited(chain, "V")) !== "") return null;
+  return term;
+}
+
+const pdfText = (t) => String(t).replace(/[^ -~]/g, "?");
+
+/**
+ * Put text where a form field should be. For each item { page, rect, text } (rect top-left
+ * normalized): type into the existing field there when it's a plain empty text field, else lay a new
+ * text box with the text on top of the spot. Written as an incremental update, so digital
+ * signatures already on the form stay valid. Throws when the PDF can't be edited safely.
+ *
+ * @returns {Promise<{bytes: Buffer, mode: string, how: ("field"|"overlay")[]}>}
+ */
+export async function fillSlots(bytes, items) {
+  const P = await openPatch(bytes, "text can't be added to it");
+  const { doc, ctx, cat, rootRef, af0, touch } = P;
+  const metrics = await doc.embedFont(StandardFonts.Helvetica); // only for measuring text; pdf-lib writes it out on save(), which an incremental update never calls
+  const font = { widthOfTextAtSize: (t, sz) => metrics.widthOfTextAtSize(t, sz), ref: ctx.register(ctx.obj({ Type: "Font", Subtype: "Type1", BaseFont: "Helvetica", Encoding: "WinAnsiEncoding" })) };
+  const how = [];
+  let af = af0;
+  const used = new Set(af instanceof PDFDict ? formFields(ctx, af).map((f) => f.name) : []);
+  for (const item of items) {
+    const page = doc.getPages()[item.page];
+    if (!page) throw new Error("A page this goes on isn't in the PDF");
+    const g = pageGeometry(page.node);
+    if (g.a !== 1 || g.d !== -1) throw new Error("The page is rotated, which closet can't write on yet");
+    const t = pdfText(item.text);
+    const [x0, y0, x1, y1] = toUser(g, item.rect);
+    const w = x1 - x0;
+    const h = y1 - y0;
+    const size = Math.min(10, Math.max(6, h - 5));
+    const tw = font.widthOfTextAtSize(t, size);
+    const tx = Math.max(2, (w - tw) / 2);
+    const ty = Math.max(1, (h - size * 0.72) / 2);
+    const ap = ctx.register(ctx.stream(`/Tx BMC q BT /Helv ${size.toFixed(2)} Tf 0 g ${tx.toFixed(2)} ${ty.toFixed(2)} Td (${t.replace(/[()\\]/g, (c) => "\\" + c)}) Tj ET Q EMC`, {
+      Type: "XObject", Subtype: "Form", BBox: [0, 0, w, h], Resources: { Font: { Helv: font.ref } },
+    }));
+    const existing = usableTextField(widgetAt(ctx, page, g, item.rect), ctx, t.length);
+    if (existing) {
+      const w2 = widgetAt(ctx, page, g, item.rect);
+      existing.dict.set(N("V"), PDFHexString.fromText(t));
+      w2.dict.set(N("AP"), ctx.obj({ N: ap }));
+      touch(existing.ref);
+      touch(w2.ref);
+      how.push("field");
+      continue;
     }
-    return out;
+    let name = "closet text";
+    for (let i = 2; used.has(name); i++) name = `closet text ${i}`;
+    used.add(name);
+    const widget = ctx.obj({ Type: "Annot", Subtype: "Widget", FT: "Tx", Rect: [x0, y0, x1, y1], F: 4, P: page.ref, AP: { N: ap }, DA: PDFString.of(`/Helv ${size.toFixed(0)} Tf 0 g`) });
+    widget.set(N("T"), PDFHexString.fromText(name));
+    widget.set(N("V"), PDFHexString.fromText(t));
+    const wRef = ctx.register(widget);
+    const annotsRaw = page.node.get(N("Annots"));
+    const annots = annotsRaw instanceof PDFRef ? ctx.lookup(annotsRaw) : annotsRaw;
+    if (annots instanceof PDFArray) {
+      annots.push(wRef);
+      touch(annotsRaw instanceof PDFRef ? annotsRaw : page.ref);
+    } else {
+      page.node.set(N("Annots"), ctx.obj([wRef]));
+      touch(page.ref);
+    }
+    if (!(af instanceof PDFDict)) {
+      af = ctx.obj({});
+      cat.set(N("AcroForm"), ctx.register(af));
+      touch(rootRef);
+    }
+    const afRef = cat.get(N("AcroForm")) instanceof PDFRef ? cat.get(N("AcroForm")) : rootRef;
+    const fRaw = af.get(N("Fields"));
+    const fArr = fRaw instanceof PDFRef ? ctx.lookup(fRaw) : fRaw;
+    if (fArr instanceof PDFArray) {
+      fArr.push(wRef);
+      touch(fRaw instanceof PDFRef ? fRaw : afRef);
+    } else {
+      af.set(N("Fields"), ctx.obj([wRef]));
+      touch(afRef);
+    }
+    if (af.has(N("XFA"))) {
+      af.delete(N("XFA"));
+      touch(afRef);
+    }
+    how.push("overlay");
+  }
+  // Reader usage rights are broken by any change
+  const permsRaw = cat.get(N("Perms"));
+  const perms = permsRaw instanceof PDFRef ? ctx.lookup(permsRaw) : permsRaw;
+  if (perms instanceof PDFDict && (perms.has(N("UR3")) || perms.has(N("UR")))) {
+    perms.delete(N("UR3"));
+    perms.delete(N("UR"));
+    if (!perms.keys().length) cat.delete(N("Perms"));
+    touch(permsRaw instanceof PDFRef ? permsRaw : rootRef);
+  }
+  return { ...(await finishPatch(P)), how };
+}
+
+// --------------------------------------------------------------------------- unofficial approval stamp
+
+const RED = "0.78 0.05 0.05";
+
+/** Remove a widget (and the field it belongs to, once nothing is left in it) from the form. */
+function removeWidget(P, page, w) {
+  const { ctx, af0, touch } = P;
+  const annotsRaw = page.node.get(N("Annots"));
+  const annots = annotsRaw instanceof PDFRef ? ctx.lookup(annotsRaw) : annotsRaw;
+  if (annots instanceof PDFArray) {
+    const i = annots.asArray().findIndex((r) => r === w.ref || (r instanceof PDFRef && w.ref && r.objectNumber === w.ref.objectNumber));
+    if (i >= 0) {
+      annots.remove(i);
+      touch(annotsRaw instanceof PDFRef ? annotsRaw : page.ref);
+    }
+  }
+  const same = (r, ref) => r instanceof PDFRef && ref instanceof PDFRef && r.objectNumber === ref.objectNumber;
+  const dropFrom = (arr, holder, ref) => {
+    if (!(arr instanceof PDFArray)) return false;
+    const i = arr.asArray().findIndex((r) => same(r, ref));
+    if (i < 0) return false;
+    arr.remove(i);
+    touch(holder);
+    return true;
   };
-  if (health.kind === "table") {
-    const nums = [...offsets.keys()].sort((a, b) => a - b);
-    let xref = "xref\n";
-    let i = 0;
-    for (const [start, count] of groups(nums)) {
-      xref += `${start} ${count}\n`;
-      for (let k = 0; k < count; k++, i++) {
-        const o = offsets.get(nums[i]);
-        xref += `${String(o.pos).padStart(10, "0")} ${String(o.gen).padStart(5, "0")} n\r\n`;
-      }
+  const chain = chainOf(ctx, w.ref, w.dict);
+  for (let k = 0; k < chain.length; k++) {
+    const node = chain[k];
+    const parent = chain[k + 1];
+    if (k > 0) {
+      const kids = node.dict.lookup(N("Kids"));
+      if (kids instanceof PDFArray && kids.size() > 0) break; // the field still has other boxes
     }
-    const size = Math.max(ctx.largestObjectNumber, before) + 1;
-    xref += `trailer\n<< /Size ${size} /Prev ${health.startxref}${extra.map(([k, v]) => ` /${k} ${ser(v)}`).join("")} >>\nstartxref\n${pos}\n%%EOF\n`;
-    parts.push(Buffer.from(xref, "latin1"));
-  } else {
-    const xrefNum = Math.max(ctx.largestObjectNumber, before) + 1;
-    offsets.set(xrefNum, { pos, gen: 0 });
-    const nums = [...offsets.keys()].sort((a, b) => a - b);
-    const rows = Buffer.alloc(nums.length * 7);
-    nums.forEach((n, i) => {
-      const o = offsets.get(n);
-      rows[i * 7] = 1;
-      rows.writeUInt32BE(o.pos, i * 7 + 1);
-      rows.writeUInt16BE(o.gen, i * 7 + 5);
-    });
-    const index = groups(nums).flat().join(" ");
-    const dict = `<< /Type /XRef /Size ${xrefNum + 1} /W [1 4 2] /Index [${index}] /Prev ${health.startxref}${extra.map(([k, v]) => ` /${k} ${ser(v)}`).join("")} /Length ${rows.length} >>`;
-    parts.push(Buffer.from(`${xrefNum} 0 obj\n${dict}\nstream\n`, "latin1"), rows, Buffer.from(`\nendstream\nendobj\nstartxref\n${pos}\n%%EOF\n`, "latin1"));
+    if (parent) {
+      const kRaw = parent.dict.get(N("Kids"));
+      dropFrom(kRaw instanceof PDFRef ? ctx.lookup(kRaw) : kRaw, kRaw instanceof PDFRef ? kRaw : parent.ref, node.ref);
+    } else if (af0 instanceof PDFDict) {
+      const fRaw = af0.get(N("Fields"));
+      dropFrom(fRaw instanceof PDFRef ? ctx.lookup(fRaw) : fRaw, fRaw instanceof PDFRef ? fRaw : P.holderOf("AcroForm", P.cat, P.rootRef), node.ref);
+    }
   }
-  return { bytes: Buffer.concat(parts), name, mode: "incremental" };
+}
+
+function dropReaderRights(P) {
+  const { ctx, cat, rootRef, touch } = P;
+  const permsRaw = cat.get(N("Perms"));
+  const perms = permsRaw instanceof PDFRef ? ctx.lookup(permsRaw) : permsRaw;
+  if (perms instanceof PDFDict && (perms.has(N("UR3")) || perms.has(N("UR")))) {
+    perms.delete(N("UR3"));
+    perms.delete(N("UR"));
+    if (!perms.keys().length) cat.delete(N("Perms"));
+    touch(permsRaw instanceof PDFRef ? permsRaw : rootRef);
+  }
+}
+
+/**
+ * Mark a form's AOC/AMT (or commander) signature as approved without a real signature: removes the
+ * unfilled signature box and puts a red "approved by First Sergeant (unofficial)" stamp where it was,
+ * extending `expandDown` points below the box into empty page. A box holding a real signature is
+ * never touched. Any `dates` ({page, rect, text}) are then typed into their boxes.
+ *
+ * @param {object} o { page, rect (top-left normalized), expandDown (pt), small, big, date, dates: [] }
+ * @returns {Promise<{bytes: Buffer, mode: string, removed: boolean}>}
+ */
+export async function approveAoc(bytes, o) {
+  const P = await openPatch(bytes, "it can't be stamped");
+  const { doc, ctx, touch } = P;
+  const page = doc.getPages()[o.page];
+  if (!page) throw new Error("The page the signature goes on isn't in the PDF");
+  const g = pageGeometry(page.node);
+  if (g.a !== 1 || g.d !== -1) throw new Error("The page is rotated, which closet can't write on yet");
+  const w = widgetAt(ctx, page, g, o.rect);
+  let removed = false;
+  if (w) {
+    const chain = chainOf(ctx, w.ref, w.dict);
+    const term = chain.find(({ dict }) => dict.get(N("T")) !== undefined)?.dict ?? w.dict;
+    const v = term.lookup(N("V"));
+    if (hasSignatureValue(v)) throw new Error("There's already a digital signature in that box");
+    const typed = v !== undefined && v !== null && !(v instanceof PDFDict) && text(v) !== "";
+    if (!typed) {
+      removeWidget(P, page, w);
+      removed = true;
+    }
+  }
+  const [x0, y0, x1, y1] = toUser(g, o.rect);
+  const lo = Math.max(g.view[1] + 2, y0 - (o.expandDown || 0));
+  const W = x1 - x0;
+  const H = y1 - lo;
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const reg = await doc.embedFont(StandardFonts.Helvetica);
+  const small = pdfText(o.small);
+  const big = pdfText(o.big);
+  const date = o.date ? pdfText(o.date) : "";
+  const fit = (f, t, size, max) => { while (size > 4 && f.widthOfTextAtSize(t, size) > max) size -= 0.25; return size; };
+  const esc = (t) => t.replace(/[()\\]/g, (c) => "\\" + c);
+  const three = H >= 36;
+  const smallSize = fit(reg, small, three ? 6 : 4.8, W - 10);
+  const bigSize = fit(bold, big, three ? Math.min(16, H * 0.4) : Math.min(9.5, H - 14), W - 14);
+  const at = (f, t, size, y) => `${((W - f.widthOfTextAtSize(t, size)) / 2).toFixed(2)} ${y.toFixed(2)} Td (${esc(t)}) Tj`;
+  const bigY = three ? (H - smallSize - 5 - (date ? 10 : 2)) / 2 + (date ? 10 : 2) - bigSize * 0.33 : 6;
+  const content = [
+    `q ${RED} RG ${RED} rg 1.3 w 1 1 ${(W - 2).toFixed(2)} ${(H - 2).toFixed(2)} re S 0.4 w 3 3 ${(W - 6).toFixed(2)} ${(H - 6).toFixed(2)} re S Q`,
+    `q ${RED} rg BT /F2 ${smallSize.toFixed(2)} Tf ${at(reg, small, smallSize, H - smallSize - 3.5)} ET Q`,
+    `q ${RED} rg BT /F1 ${bigSize.toFixed(2)} Tf ${at(bold, big, bigSize, bigY)} ET Q`,
+    date && three ? `q ${RED} rg BT /F2 6 Tf ${at(reg, date, 6, 5)} ET Q` : "",
+  ].join("\n");
+  const fontRef = (name) => ctx.register(ctx.obj({ Type: "Font", Subtype: "Type1", BaseFont: name, Encoding: "WinAnsiEncoding" }));
+  const ap = ctx.register(ctx.stream(content, {
+    Type: "XObject", Subtype: "Form", BBox: [0, 0, W, H], Resources: { Font: { F1: fontRef("Helvetica-Bold"), F2: fontRef("Helvetica") } },
+  }));
+  const stamp = ctx.obj({
+    Type: "Annot", Subtype: "Stamp", Rect: [x0, lo, x1, y1], F: 4, P: page.ref, C: [0.78, 0.05, 0.05], AP: { N: ap },
+    Contents: PDFHexString.fromText(`${small}. ${big}${date ? ` ${date}` : ""}`), T: PDFString.of("First Sergeant"),
+  });
+  const sRef = ctx.register(stamp);
+  const annotsRaw = page.node.get(N("Annots"));
+  const annots = annotsRaw instanceof PDFRef ? ctx.lookup(annotsRaw) : annotsRaw;
+  if (annots instanceof PDFArray) {
+    annots.push(sRef);
+    touch(annotsRaw instanceof PDFRef ? annotsRaw : page.ref);
+  } else {
+    page.node.set(N("Annots"), ctx.obj([sRef]));
+    touch(page.ref);
+  }
+  dropReaderRights(P);
+  let out = await finishPatch(P);
+  if (o.dates?.length) out = { ...(await fillSlots(out.bytes, o.dates)), mode: out.mode };
+  return { bytes: out.bytes, mode: out.mode, removed };
 }

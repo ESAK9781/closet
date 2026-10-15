@@ -15,7 +15,7 @@ import { ParserPool } from "./pool.js";
 import { quickDump } from "./quickdump.js";
 import * as R from "./records.js";
 import { Sync, validateFolders } from "./sync.js";
-import { FORM_TYPES } from "./templates.js";
+import { APPROVE_STAMP, BULK_STEPS, FORM_TYPES, flagSlots } from "./templates.js";
 
 export const PARSER_VERSION = 20; // JS engine; bumping re-reads every form (edits are kept)
 
@@ -27,6 +27,8 @@ export const DEFAULT_SETTINGS = {
   f174_commander_role: "aoc_signed",
   include_header: false,
   position_tolerance_pt: 10,
+  first_shirt_fill_date: true, // bulk SQ/CCF initialing also writes today's date in the log-in date box
+  bulk_initials: { sqccf_processed: "", cadet_cc_initialed: "" }, // remembered between runs
   dump_mode: "quick", // "quick": one Quick dump folder; "sync": send/returned folders per step (sync.js)
   print_packet: false, // also write the combined AOC/AMT print packet when dumping or syncing
   sync_folders: {}, // { <step key>|complete|intake: { push, pull } }
@@ -37,6 +39,14 @@ const TEMPLATE_NAMES = new Set(Object.values(FORM_TYPES).map((s) => s.templateFi
 
 const now = () => new Date().toISOString().slice(0, 19);
 const clone = (o) => structuredClone(o);
+
+/** Today's date the way the forms write it: "15 Oct 26", or ISO when the form's own date is ISO. */
+function todayText(iso = false) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()];
+  return iso ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` : `${pad(d.getDate())} ${mon} ${String(d.getFullYear()).slice(2)}`;
+}
 
 export function formId(filename) {
   return createHash("sha1").update(filename.toLowerCase(), "utf8").digest("hex").slice(0, 14);
@@ -177,6 +187,9 @@ export class Store extends EventEmitter {
       for (const [k, v] of Object.entries(patch.sync_folders)) merged[k] = { ...merged[k], ...v };
       validateFolders(merged, { dump: this.dump, meta: this.meta });
       patch = { ...patch, sync_folders: merged };
+    }
+    for (const v of Object.values(patch?.bulk_initials || {})) {
+      if (typeof v !== "string" || v.length > 8 || /[^ -~]/.test(v)) throw new Error("Initials are 8 printable characters at most");
     }
     if (patch?.dump_mode !== undefined && !["quick", "sync"].includes(patch.dump_mode)) throw new Error("Unknown dump mode");
     for (const [k, v] of Object.entries(patch || {})) {
@@ -595,6 +608,133 @@ export class Store extends EventEmitter {
     this.save(m);
     this.scan();
     this.reparse(id); // even if size and modified time happen to match the old file
+  }
+
+  /** Forms that still need a bulk step, and what would be written on each. */
+  bulkPlan(step, ids = null) {
+    const spec = BULK_STEPS[step];
+    if (!spec) throw new Error("That step can't be completed in bulk");
+    const fillDates = !spec.dateSetting || Boolean(this.settings[spec.dateSetting]);
+    const out = [];
+    let skipped = 0;
+    for (const f of this.snapshot().forms) {
+      if (f.archived || f.missing || f.record?.[step] !== false || (ids && !ids.includes(f.id))) continue;
+      const m = this.metas.get(f.id);
+      const slots = m?.analysis?.slots || {};
+      const at = slots[spec.initials];
+      if (!f.parsed || f.pending || !at?.located || at.page === null || !this.pdfPath(f.id)) { skipped++; continue; }
+      const items = [];
+      if (!at.filled) items.push({ key: spec.initials, page: at.page, rect: at.rect, kind: "initials" });
+      if (fillDates) for (const k of spec.dates) if (slots[k]?.located && slots[k].page !== null && !slots[k].filled) items.push({ key: k, page: slots[k].page, rect: slots[k].rect, kind: "date" });
+      out.push({ id: f.id, filename: f.filename, recipients: f.record.recipients || "", items, iso: /^\d{4}-\d\d-\d\d$/.test(String(slots.date?.value || "").trim()) });
+    }
+    return { step, label: spec.label, forms: out, skipped, fill_dates: fillDates, initials: this.settings.bulk_initials?.[step] || "" };
+  }
+
+  /**
+   * Initial (and date) every form still waiting on a step: the same initials everywhere, written into
+   * the PDF (the original is kept under metadata/backups), and the step's flag set. The initials are
+   * remembered for next time.
+   */
+  async bulkStep(step, initials, ids = null) {
+    initials = String(initials ?? "").trim();
+    if (!initials) throw new Error("Enter the initials to use");
+    this.updateSettings({ bulk_initials: { [step]: initials } });
+    await this.ready;
+    if (this.templateError) throw new Error(this.templateError);
+    await this.whenIdle();
+    const plan = this.bulkPlan(step, ids);
+    const dateText = todayText;
+    const out = { step, label: plan.label, initials, done: [], failed: [], skipped: plan.skipped, filled_dates: plan.fill_dates, written: 0 };
+    const work = path.join(this.meta, "bulk");
+    const backups = path.join(this.meta, "backups");
+    fs.mkdirSync(work, { recursive: true });
+    fs.mkdirSync(backups, { recursive: true });
+    await Promise.all(plan.forms.map(async (f) => {
+      const m = this.metas.get(f.id);
+      const src = this.pdfPath(f.id);
+      const tmp = path.join(work, `${f.id}.pdf`);
+      try {
+        if (!m || !src) throw new Error("the file is gone");
+        const items = f.items.map((it) => ({ page: it.page, rect: it.rect, text: it.kind === "initials" ? initials : dateText(f.iso) }));
+        if (items.length) {
+          const before = sha1File(src);
+          await this.pool.run("fillSlots", { file: src, items, out: tmp });
+          if (sha1File(src) !== before) throw new Error("the file changed while it was being edited; try again");
+          this.backupAndReplace(m, src, tmp);
+          out.written += items.length;
+        }
+        const ov = (m.overrides ||= {});
+        ov[step] = true; // shown as done in the app even before the edited PDF has been read again
+        const what = items.length ? `Bulk ${plan.label}: wrote ${f.items.map((i) => (i.kind === "initials" ? `initials ${initials}` : "date")).join(" and ")} into the PDF` : `Bulk ${plan.label}: marked done (already filled in)`;
+        m.history = [...(m.history || []), { at: now(), what }].slice(-60);
+        this.save(m);
+        this.reparse(f.id);
+        out.done.push(f.id);
+      } catch (e) {
+        out.failed.push({ id: f.id, filename: f.filename, error: String(e?.message || e) });
+      } finally {
+        fs.rmSync(tmp, { force: true });
+      }
+    }));
+    this.scan();
+    this.bump();
+    return out;
+  }
+
+  /**
+   * Mark one form's AOC/AMT approval without a signed copy (the AMT said yes, nothing came back):
+   * the empty signature box is removed and a red "approved by First Sergeant (unofficial)" stamp goes
+   * where it was, with any date box that goes with it filled. Single form only, on purpose.
+   */
+  async approveAoc(id) {
+    const m = this.metas.get(id);
+    if (!m) throw new Error("No such form");
+    await this.ready;
+    await this.whenIdle();
+    const f = this.snapshot().forms.find((x) => x.id === id);
+    if (!f || f.archived || !f.parsed) throw new Error("That form isn't ready (it may still be being read)");
+    if (f.record.aoc_signed !== false) throw new Error(f.record.aoc_signed ? "That form already has its AOC/AMT signature" : "This form has no AOC/AMT step");
+    const slotKey = (flagSlots(f.record.form_type, this.settings).aoc_signed || [])[0];
+    const slots = m.analysis?.slots || {};
+    const at = slots[slotKey];
+    if (!at?.located || at.page === null) throw new Error("closet couldn't find where the AOC/AMT signature goes on this form");
+    const spec = APPROVE_STAMP[slotKey] || { expandDown: 0, dates: [] };
+    const iso = /^\d{4}-\d\d-\d\d$/.test(String(slots.date?.value || "").trim());
+    const today = todayText(iso);
+    const dates = spec.dates.filter((k) => slots[k]?.located && slots[k].page !== null && !slots[k].filled)
+      .map((k) => ({ page: slots[k].page, rect: slots[k].rect, text: today }));
+    const src = this.pdfPath(id);
+    if (!src) throw new Error("The PDF is gone");
+    const work = path.join(this.meta, "bulk");
+    fs.mkdirSync(work, { recursive: true });
+    const tmp = path.join(work, `${id}.pdf`);
+    try {
+      const before = sha1File(src);
+      const r = await this.pool.run("approveAoc", {
+        file: src, out: tmp,
+        options: { page: at.page, rect: at.rect, expandDown: spec.expandDown, small: "Marked AOC/AMT approved by First Sergeant (unofficial)", big: "AOC/AMT Approved", date: todayText(false), dates },
+      });
+      if (sha1File(src) !== before) throw new Error("the file changed while it was being edited; try again");
+      this.backupAndReplace(m, src, tmp);
+      (m.overrides ||= {}).aoc_signed = true;
+      m.history = [...(m.history || []), { at: now(), what: `Marked AOC/AMT approved by First Sergeant (unofficial): ${r.removed ? "empty signature box replaced with" : "added"} a stamp${dates.length ? " and dated the form" : ""}` }].slice(-60);
+      this.save(m);
+      this.reparse(id);
+      this.scan();
+      this.bump();
+      return { id, removed: r.removed, dated: dates.length };
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+  }
+
+  /** Keep the file as it was under metadata/backups, then put the edited copy in its place. */
+  backupAndReplace(m, src, edited) {
+    const backups = path.join(this.meta, "backups");
+    fs.mkdirSync(backups, { recursive: true });
+    fs.copyFileSync(src, path.join(backups, `${m.id}-${Date.now()}.pdf`));
+    fs.copyFileSync(edited, src);
   }
 
   /** Resolves once nothing is queued or being read. */
