@@ -34,9 +34,11 @@ const openForm = async (text) => {
 };
 const rowsShown = () => page.$$eval("#results tbody tr[data-open]", (r) => r.length);
 const setFilter = async (key, value) => {
-  await page.selectOption(`[data-filter="${key}"]`, value);
+  if (await page.$eval("#filterPanel", (p) => p.hidden)) await page.click("#filterBtn");
+  await page.click(`[data-filter="${key}"][data-v="${value}"]`);
   await page.waitForTimeout(150);
 };
+const choices = (key) => page.$$eval(`[data-filter="${key}"]`, (b) => b.map((x) => x.textContent));
 
 before(async () => {
   tmp = mkdtempSync(path.join(os.tmpdir(), "closet-e2e-forms-"));
@@ -120,15 +122,18 @@ test("filters: next step, attention, tracker, reason, class, month, with counts 
   await setFilter("step", "recipient_signed");
   assert.equal(await rowsShown(), live.filter((f) => f.parsed && first(f) === "recipient_signed").length);
   assert.match(await page.textContent("#countLbl"), /of \d+ forms/);
-  const stepOpts = await page.$$eval('[data-filter="step"] option', (o) => o.map((x) => x.textContent));
-  assert.ok(stepOpts.some((t) => /^Needs Recipient next \(\d+\)$/.test(t)), stepOpts.join(" | "));
+  const stepOpts = await choices("step");
+  assert.ok(stepOpts.some((t) => /^Needs Recipient next\d+$/.test(t)), stepOpts.join(" | "));
+  assert.equal((await page.$$("#main select")).length, 0, "no dropdowns in the filter bar: one Filter control");
+  assert.match(await page.textContent("#filterBtn"), /Filter · 1/);
+  assert.match(await page.textContent(".fchip"), /Next step: Needs Recipient next/);
 
   // counts follow the other filters: after narrowing to F174, the F10-only reason disappears from the list
   await setFilter("step", "all");
-  const reasonsAll = await page.$$eval('[data-filter="reason"] option', (o) => o.map((x) => x.textContent));
+  const reasonsAll = await choices("reason");
   await page.click('[data-seg="type"][data-v="F174"]');
   await page.waitForTimeout(200);
-  const reasons174 = await page.$$eval('[data-filter="reason"] option', (o) => o.map((x) => x.textContent));
+  const reasons174 = await choices("reason");
   assert.ok(reasons174.length < reasonsAll.length, `${reasons174.length} < ${reasonsAll.length}`);
   assert.equal(await rowsShown(), live.filter((f) => f.record.form_type === "F174").length);
   await page.click('[data-seg="type"][data-v="all"]');
@@ -139,7 +144,7 @@ test("filters: next step, attention, tracker, reason, class, month, with counts 
   assert.equal(await rowsShown(), live.filter((f) => !f.needs_review && !(f.incomplete || []).length).length);
   await setFilter("attn", "all");
 
-  assert.equal(await page.$('[data-filter="tracker"] option[value="logged"]'), null, "a choice that would show nothing isn't offered");
+  assert.equal(await page.$('[data-filter="tracker"][data-v="logged"]'), null, "a choice that would show nothing isn't offered");
   await page.evaluate((id) => window.closet.api("PATCH", `/api/forms/${id}`, { logged: true }), live[0].id);
   await page.waitForTimeout(600);
   await setFilter("tracker", "logged");
@@ -167,7 +172,7 @@ test("the overview's 'awaiting a signature' tile lands on the matching filter", 
   await go("overview");
   await page.click('[data-status="awaiting"]');
   await page.waitForTimeout(400);
-  assert.equal(await page.inputValue('[data-filter="step"]'), "open");
+  assert.match(await page.textContent(".fchip"), /Next step: Still needs a signature/);
   const s = await state();
   assert.equal(await rowsShown(), s.forms.filter((f) => !f.archived && f.parsed && ["sqccf_processed", "cadet_cc_initialed", "recipient_signed", "aoc_signed"].some((k) => f.record[k] === false)).length);
   await page.click("#clearFilters");

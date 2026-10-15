@@ -603,36 +603,52 @@ function matchesFilters(f, F, skip = "") {
   return true;
 }
 
+// One "Filter" control: a button that opens a single panel with every choice. Counts follow the
+// other active filters, so a choice that would show nothing isn't offered.
+let filterOpen = false;
+document.addEventListener("click", (e) => {
+  if (filterOpen && !e.target.closest(".filter-wrap")) { filterOpen = false; $("#filterPanel")?.setAttribute("hidden", ""); $("#filterBtn")?.setAttribute("aria-expanded", "false"); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && filterOpen && !modalOpen()) { filterOpen = false; renderFilters(); }
+});
+
 function renderFilters() {
   const el = $("#filters");
   if (!el) return;
   const pool = (S.data.forms || []).filter((f) => !f.archived);
   const facet = (key) => pool.filter((f) => matchesFilters(f, S.f, key));
-  const sel = (key, label, opts) => `<select class="select" data-filter="${key}" aria-label="${label}" ${S.f[key] !== "all" ? 'data-on="1"' : ""}>${opts
-    .filter(([v, , n]) => v === "all" || v === S.f[key] || n !== 0)
-    .map(([v, l, n]) => `<option value="${esc(v)}" ${S.f[key] === v ? "selected" : ""}>${v === "all" ? `${label}: any` : esc(l)}${n === undefined ? "" : ` (${n})`}</option>`).join("")}</select>`;
   const count = (fn, list) => list.reduce((m, f) => { for (const k of fn(f)) m.set(k, (m.get(k) || 0) + 1); return m; }, new Map());
   const stepF = facet("step");
-  const steps = [["all", "", stepF.length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
+  const steps = [["all", "Any", stepF.length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
     ...FLAGS.map(([k, short]) => [k, `Needs ${short} next`, stepF.filter((f) => firstOpen(f) === k).length]), ["complete", "Fully routed", stepF.filter((f) => firstOpen(f) === "complete").length]];
   const attnF = facet("attn");
-  const attn = [["all", "", attnF.length], ["needs", "Needs attention", attnF.filter((f) => attnOf(f) !== "clean").length], ["review", "Needs review", attnF.filter((f) => attnOf(f) === "review").length],
+  const attn = [["all", "Any", attnF.length], ["needs", "Needs attention", attnF.filter((f) => attnOf(f) !== "clean").length], ["review", "Needs review", attnF.filter((f) => attnOf(f) === "review").length],
     ["incomplete", "Missing CDNA/Passes", attnF.filter((f) => attnOf(f) === "incomplete").length], ["clean", "Nothing to fix", attnF.filter((f) => attnOf(f) === "clean").length]];
   const trF = facet("tracker");
-  const tracker = [["all", "", trF.length], ["unlogged", "Not in the tracker", trF.filter((f) => f.parsed && !f.logged).length], ["logged", "In the tracker", trF.filter((f) => f.logged).length]];
+  const tracker = [["all", "Any", trF.length], ["unlogged", "Not in the tracker", trF.filter((f) => f.parsed && !f.logged).length], ["logged", "In the tracker", trF.filter((f) => f.logged).length]];
   const rs = count((f) => [reasonOf(f)], facet("reason"));
-  const reasons = [["all", "", facet("reason").length], ...[...rs].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => [k, k, n])];
+  const reasons = [["all", "Any", facet("reason").length], ...[...rs].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => [k, k, n])];
   const ys = count(yearsOf, facet("year"));
-  const years = [["all", "", facet("year").length], ...[...ys].sort((a, b) => b[0].localeCompare(a[0])).map(([k, n]) => [k, `Class of ${k}`, n])];
+  const years = [["all", "Any", facet("year").length], ...[...ys].sort((a, b) => b[0].localeCompare(a[0])).map(([k, n]) => [k, `Class of ${k}`, n])];
   const ms = count((f) => [monthOf(f)], facet("month"));
-  const months = [["all", "", facet("month").length], ...[...ms].sort((a, b) => (a[0] === "none") - (b[0] === "none") || b[0].localeCompare(a[0])).map(([k, n]) => [k, monthLabel(k), n])];
-  for (const [key, opts] of [["step", steps], ["attn", attn], ["tracker", tracker], ["reason", reasons], ["year", years], ["month", months]]) {
+  const months = [["all", "Any", facet("month").length], ...[...ms].sort((a, b) => (a[0] === "none") - (b[0] === "none") || b[0].localeCompare(a[0])).map(([k, n]) => [k, monthLabel(k), n])];
+  const groups = [["step", "Next step", steps], ["attn", "Attention", attn], ["tracker", "Tracker", tracker], ["reason", "Reason", reasons], ["year", "Class year", years], ["month", "Month", months]];
+  for (const [key, , opts] of groups) {
     if (S.f[key] !== "all" && !opts.some(([v]) => v === S.f[key])) { S.f[key] = "all"; return renderPaperRows(); } // that choice no longer exists
   }
-  const on = Object.keys(FILTER_OFF).some((k) => S.f[k] !== FILTER_OFF[k]);
-  el.innerHTML = `${sel("step", "Next step", steps)}${sel("attn", "Attention", attn)}${sel("tracker", "Tracker", tracker)}${sel("reason", "Reason", reasons)}${sel("year", "Class", years)}${sel("month", "Month", months)}
-    ${on ? `<button type="button" class="btn ghost small" id="clearFilters">${icon("x")}Clear filters</button>` : ""}<span class="spacer"></span><span id="countLbl" style="color:var(--muted);font-size:13px"></span>`;
-  $$("[data-filter]", el).forEach((x) => (x.onchange = () => { S.f[x.dataset.filter] = x.value; renderPaperRows(); }));
+  const on = groups.filter(([k]) => S.f[k] !== "all");
+  const section = ([key, label, opts]) => `<div class="fgroup"><h4>${label}</h4>${opts
+    .filter(([v, , n]) => v === "all" || v === S.f[key] || n !== 0)
+    .map(([v, l, n]) => `<button type="button" data-filter="${key}" data-v="${esc(v)}" aria-pressed="${S.f[key] === v}"><span>${esc(l)}</span><em>${n}</em></button>`).join("")}</div>`;
+  const chip = ([key, label, opts]) => `<button type="button" class="fchip" data-unfilter="${key}" title="Remove this filter">${label}: ${esc(opts.find(([v]) => v === S.f[key])?.[1] ?? S.f[key])}${icon("x")}</button>`;
+  el.innerHTML = `<div class="filter-wrap"><button type="button" class="btn small ${on.length ? "" : "ghost"}" id="filterBtn" aria-expanded="${filterOpen}" aria-controls="filterPanel">${icon("search")}Filter${on.length ? ` · ${on.length}` : ""}</button>
+      <div class="filter-panel" id="filterPanel" ${filterOpen ? "" : "hidden"}>${groups.map(section).join("")}</div></div>
+    ${on.map(chip).join("")}
+    ${on.length || S.f.type !== "all" || S.f.pn !== "all" || S.f.q ? `<button type="button" class="btn ghost small" id="clearFilters">${icon("x")}Clear filters</button>` : ""}<span class="spacer"></span><span id="countLbl" style="color:var(--muted);font-size:13px"></span>`;
+  $("#filterBtn").onclick = () => { filterOpen = !filterOpen; $("#filterPanel").toggleAttribute("hidden", !filterOpen); $("#filterBtn").setAttribute("aria-expanded", filterOpen); };
+  $$("[data-filter]", el).forEach((b) => (b.onclick = () => { S.f[b.dataset.filter] = b.dataset.v; renderPaperRows(); }));
+  $$("[data-unfilter]", el).forEach((b) => (b.onclick = () => { S.f[b.dataset.unfilter] = "all"; renderPaperRows(); }));
   const clr = $("#clearFilters");
   if (clr) {
     clr.onclick = () => {
