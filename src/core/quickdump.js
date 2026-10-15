@@ -2,8 +2,9 @@
 // still waiting on. The originals are only ever read. Each run rebuilds the five step folders in
 // the chosen output folder (and nothing else in it, so it can be any folder the user picked).
 //
-// The last-step folder also gets one combined PDF for printing: an index sheet, then every form's
-// pages as the app shows them (the cached page images, so typed field values are on the paper).
+// Optionally (Settings, off by default) the AOC/AMT folder also gets one combined PDF for printing:
+// an index sheet, then every form's pages as the app shows them (the cached page images, so typed
+// field values are on the paper). Sync mode reuses the step logic and the packet.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -12,14 +13,14 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 import { FLAG_DEFS } from "./templates.js";
 
-const PACKET_STEP = "aoc_signed";
-const PACKET_NAME = "AOC-AMT packet (print).pdf";
+export const PACKET_STEP = "aoc_signed";
+export const PACKET_NAME = "AOC-AMT packet (print).pdf";
 
 const folderNames = [...FLAG_DEFS.map(([k, , short], i) => [k, `${i + 1} - Needs ${short}`]), ["complete", `${FLAG_DEFS.length + 1} - Fully complete`]];
 
-const firstOpenStep = (rec) => FLAG_DEFS.find(([k]) => rec[k] === false)?.[0] ?? "complete"; // null = n/a on this form
+export const firstOpenStep = (rec) => FLAG_DEFS.find(([k]) => rec[k] === false)?.[0] ?? "complete"; // null = n/a on this form
 
-export async function quickDump(store, out) {
+export async function quickDump(store, out, { packet: withPacket = false } = {}) {
   if (!out) throw new Error("No quick dump folder is set");
   const counts = {};
   const packet = [];
@@ -37,11 +38,10 @@ export async function quickDump(store, out) {
     const step = firstOpenStep(f.record);
     fs.copyFileSync(src, path.join(out, dirOf[step], f.filename));
     counts[step]++;
-    if (step === PACKET_STEP) packet.push(f);
+    if (step === PACKET_STEP && withPacket) packet.push(f);
   }
   let packetPages = 0;
   if (packet.length) {
-    packet.sort((a, b) => (a.record.date_iso || "9999").localeCompare(b.record.date_iso || "9999") || a.filename.localeCompare(b.filename));
     const pdf = await buildPacket(store, packet);
     fs.writeFileSync(path.join(out, dirOf[PACKET_STEP], PACKET_NAME), pdf.bytes);
     packetPages = pdf.pages;
@@ -49,7 +49,9 @@ export async function quickDump(store, out) {
   return { dir: out, folders: folderNames.map(([key, name]) => ({ key, name, count: counts[key] })), skipped, packetForms: packet.length, packetPages };
 }
 
-async function buildPacket(store, forms) {
+/** Index sheet + every form's pages, oldest first. @returns {{bytes: Uint8Array, pages: number}} */
+export async function buildPacket(store, forms) {
+  forms = [...forms].sort((a, b) => (a.record.date_iso || "9999").localeCompare(b.record.date_iso || "9999") || a.filename.localeCompare(b.filename));
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);

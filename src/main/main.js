@@ -83,6 +83,15 @@ async function route(method, url, body) {
   if (method === "GET" && p === "/api/state") return { ...store.snapshot(), quick_dump_dir: config.quickDumpDir };
   if (method === "GET" && p === "/api/version") return { version: store.version, status: { ...store.status, queued: store.queue.length + store.inFlight.size } };
   if (method === "POST" && p === "/api/quick-dump") return store.quickDump(config.quickDumpDir);
+  if (method === "POST" && p === "/api/sync/pull") return store.sync.pull();
+  if (method === "POST" && p === "/api/sync/resolve") return store.sync.resolve(Array.isArray(body?.decisions) ? body.decisions : []);
+  if (method === "POST" && p === "/api/sync/push") return store.sync.push();
+  if (method === "POST" && p === "/api/sync/fix") return store.sync.fix(String(body?.id || ""), String(body?.step || ""), String(body?.action || ""));
+  if ((x = m(/^\/api\/sync\/pending\/([0-9a-f]+)$/)) && method === "GET") {
+    const d = store.sync.pendingDetail(x[1]);
+    if (!d) throw new Error("That pulled file is no longer waiting");
+    return d;
+  }
   if (method === "POST" && p === "/api/scan") return { ...store.scan(), version: store.version };
   if (method === "POST" && p === "/api/reset") {
     if (body?.confirm !== "clear") throw new Error("Missing confirmation");
@@ -159,6 +168,33 @@ function registerIpc() {
     config.quickDumpDir = r.filePaths[0];
     saveConfig();
     return config.quickDumpDir;
+  });
+  ipcMain.handle("closet:choose-sync-folder", async (_e, key, dir) => {
+    const cur = store.settings.sync_folders?.[key]?.[dir];
+    const r = await dialog.showOpenDialog(win, {
+      title: dir === "push" ? "Choose the send folder" : "Choose the returned folder",
+      message: dir === "push" ? "closet puts copies here for people to sign. It only ever removes its own copies." : "Signed copies saved here are pulled in at the next sync.",
+      defaultPath: cur || undefined,
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false };
+    try {
+      store.updateSettings({ sync_folders: { [key]: { [dir]: r.filePaths[0] } } });
+      return { ok: true, path: r.filePaths[0] };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:clear-sync-folder", (_e, key, dir) => {
+    try {
+      store.updateSettings({ sync_folders: { [key]: { [dir]: "" } } });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:open-path", (_e, p) => {
+    if (typeof p === "string" && path.isAbsolute(p) && fs.existsSync(p)) shell.showItemInFolder(p);
   });
   ipcMain.handle("closet:choose-dump", async () => {
     const r = await dialog.showOpenDialog(win, {
@@ -267,13 +303,15 @@ function registerScheme() {
       if (parts[0] === "fonts") file = path.join(FONTS, parts.slice(1).join("/"));
       else file = path.join(RENDERER, parts.join("/") || "index.html");
       if (!inside(parts[0] === "fonts" ? FONTS : RENDERER, file)) file = null;
+    } else if (u.host === "syncpage" && parts.length === 2 && /^[0-9a-f]+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
+      file = store?.sync.pageImage(parts[0], Number(parts[1]));
     } else if (u.host === "page" && parts.length === 2 && /^[0-9a-f]+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
       file = store?.pageImage(parts[0], Number(parts[1]));
     }
     if (!file || !fs.existsSync(file)) return new Response("Not found", { status: 404 });
     const res = await net.fetch(pathToFileURL(file).toString());
     const headers = new Headers(res.headers);
-    headers.set("Cache-Control", u.host === "page" ? "no-cache" : "no-store");
+    headers.set("Cache-Control", u.host === "page" || u.host === "syncpage" ? "no-cache" : "no-store");
     return new Response(res.body, { status: res.status, headers });
   });
 }

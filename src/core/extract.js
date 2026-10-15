@@ -353,6 +353,9 @@ function matchWidgets(slots, widgets, W, H, tolPt) {
         c = 0.01 + d + 0.35 * sz + compat;
       }
       if (normName(w.name) === normName(s.name)) c -= 0.02;
+      // two fields stacked on one spot (closet adds one on top when the original can't be signed):
+      // the one that holds something is the one that was used
+      if (w.digital || !["", false, null].includes(w.value)) c -= 0.03;
       cost[i][j] = c;
     });
   });

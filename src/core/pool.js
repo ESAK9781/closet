@@ -56,12 +56,17 @@ export class ParserPool {
   }
 
   /** @returns {Promise<object>} the analysis for one PDF */
-  async analyze(job) {
+  analyze(job) {
+    return this.run("analyze", job);
+  }
+
+  /** Any job worker.js knows: "analyze", "inspect", "addField". */
+  async run(type, job) {
     const w = await this.acquire();
     const id = this.nextJob++;
     return new Promise((resolve, reject) => {
       this.jobs.set(id, { resolve, reject, worker: w });
-      w.postMessage({ type: "analyze", id, ...job });
+      w.postMessage({ type, id, ...job });
     });
   }
 

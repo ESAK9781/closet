@@ -14,6 +14,7 @@ import path from "node:path";
 import { ParserPool } from "./pool.js";
 import { quickDump } from "./quickdump.js";
 import * as R from "./records.js";
+import { Sync, validateFolders } from "./sync.js";
 import { FORM_TYPES } from "./templates.js";
 
 export const PARSER_VERSION = 20; // JS engine; bumping re-reads every form (edits are kept)
@@ -26,6 +27,9 @@ export const DEFAULT_SETTINGS = {
   f174_commander_role: "aoc_signed",
   include_header: false,
   position_tolerance_pt: 10,
+  dump_mode: "quick", // "quick": one Quick dump folder; "sync": send/returned folders per step (sync.js)
+  print_packet: false, // also write the combined AOC/AMT print packet when dumping or syncing
+  sync_folders: {}, // { <step key>|complete|intake: { push, pull } }
 };
 
 // Blank templates that older versions kept in the dump folder: never listed as paperwork.
@@ -105,6 +109,8 @@ export class Store extends EventEmitter {
     this.settings = this.loadSettings();
     this.namesPath = path.join(this.meta, "names.json");
     this.names = this.loadNames();
+    this.sync = new Sync(this);
+    if (this.settings.dump_mode === "sync") this.sync.activate();
     for (const f of fs.readdirSync(this.formsDir)) {
       if (!f.endsWith(".json")) continue;
       const m = readJson(path.join(this.formsDir, f), null);
@@ -166,12 +172,21 @@ export class Store extends EventEmitter {
 
   updateSettings(patch) {
     let reread = false;
+    if (patch?.sync_folders) {
+      const merged = { ...this.settings.sync_folders };
+      for (const [k, v] of Object.entries(patch.sync_folders)) merged[k] = { ...merged[k], ...v };
+      validateFolders(merged, { dump: this.dump, meta: this.meta });
+      patch = { ...patch, sync_folders: merged };
+    }
+    if (patch?.dump_mode !== undefined && !["quick", "sync"].includes(patch.dump_mode)) throw new Error("Unknown dump mode");
     for (const [k, v] of Object.entries(patch || {})) {
       if (!(k in DEFAULT_SETTINGS)) continue;
       if (k === "position_tolerance_pt" && v !== this.settings[k]) reread = true;
-      if (v && typeof v === "object" && typeof this.settings[k] === "object") Object.assign(this.settings[k], v);
+      if (k === "sync_folders") this.settings[k] = v;
+      else if (v && typeof v === "object" && typeof this.settings[k] === "object") Object.assign(this.settings[k], v);
       else this.settings[k] = v;
     }
+    if (this.settings.dump_mode === "sync") this.sync.activate();
     writeJson(path.join(this.meta, "settings.json"), this.settings);
     if (reread) for (const id of this.metas.keys()) this.reparse(id);
     this.bump();
@@ -571,14 +586,28 @@ export class Store extends EventEmitter {
    * Overwrite one form's PDF with an updated copy (e.g. the same paperwork scanned back in with a
    * signature on it now), keeping the same filename so edits, flags and history carry over.
    */
-  replaceFile(id, src) {
+  replaceFile(id, src, note = "Replaced with an uploaded copy") {
     const m = this.metas.get(id);
     if (!m) throw new Error("No such form");
     if (!fs.existsSync(src)) throw new Error("That file no longer exists");
     fs.copyFileSync(src, path.join(this.dump, m.filename));
-    m.history = [...(m.history || []), { at: now(), what: "Replaced with an uploaded copy" }].slice(-60);
+    m.history = [...(m.history || []), { at: now(), what: note }].slice(-60);
     this.save(m);
     this.scan();
+    this.reparse(id); // even if size and modified time happen to match the old file
+  }
+
+  /** Resolves once nothing is queued or being read. */
+  whenIdle(timeout = 300000) {
+    const t0 = Date.now();
+    return new Promise((resolve, reject) => {
+      const tick = () => {
+        if (!this.queue.length && !this.inFlight.size) return resolve();
+        if (Date.now() - t0 > timeout) return reject(new Error("Timed out waiting for forms to be read"));
+        setTimeout(tick, 100);
+      };
+      tick();
+    });
   }
 
   // ------------------------------------------------------------------ views
@@ -596,6 +625,7 @@ export class Store extends EventEmitter {
       roster: Object.fromEntries(roster),
       name_pairs: this.namePairs(forms),
       forms,
+      sync: this.sync.summary(),
       dump_dir: this.dump,
       meta_dir: this.meta,
     };
@@ -659,7 +689,7 @@ export class Store extends EventEmitter {
   }
 
   quickDump(outDir) {
-    return quickDump(this, outDir);
+    return quickDump(this, outDir, { packet: Boolean(this.settings.print_packet) });
   }
 
   pageImage(id, n) {
