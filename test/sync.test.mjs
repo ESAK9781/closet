@@ -163,6 +163,7 @@ test("pull: a signed copy is matched by name and content; an unrelated one is of
   const fresh = by("Ada Quinn_Pos_F10_Volunteering.pdf");
   assert.equal(fresh.kind, "new");
   assert.equal(fresh.suggestion.action, "new");
+  assert.deepEqual(fresh.candidates, [], "new paperwork is never matched to an existing form");
   const again = await store.sync.pull();
   assert.equal(again.items.length, 3, "still waiting, not duplicated: " + again.items.map((i) => i.filename + "@" + i.key).join(" | "));
   assert.equal(store.sync.summary().pending.length, 3);
@@ -185,6 +186,8 @@ test("confirm: replace works like Upload updated copy; new adds a form; review p
   assert.match(m.history.at(-1).what, /Replaced by sync/);
   assert.equal(m.filename, "John Doe_Neg_F10_Uniform Violation.pdf", "same file, so edits and history carry over");
   assert.ok(form("Ada Quinn"), "new form added to the dump folder");
+  assert.ok(!fs.existsSync(dir("sync", "intake", "Ada Quinn_Pos_F10_Volunteering.pdf")), "intake copy is deleted once added");
+  assert.ok(fs.existsSync(dir("sync", "returned recipient", "scan 0001.pdf")), "returned copies are never deleted");
   const left = store.sync.summary().pending;
   assert.deepEqual(left.map((p) => [p.filename, p.status]), [["scan 0001.pdf", "review"]]);
   const rep = await store.sync.push();

@@ -11,6 +11,8 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 
+import { Notifier } from "./notify.js";
+import { TRACKER_DEFAULTS, Tracker, mergeTracker } from "./tracker.js";
 import { ParserPool } from "./pool.js";
 import { quickDump } from "./quickdump.js";
 import * as R from "./records.js";
@@ -32,6 +34,7 @@ export const DEFAULT_SETTINGS = {
   dump_mode: "quick", // "quick": one Quick dump folder; "sync": send/returned folders per step (sync.js)
   print_packet: false, // also write the combined AOC/AMT print packet when dumping or syncing
   sync_folders: {}, // { <step key>|complete|intake: { push, pull } }
+  tracker: TRACKER_DEFAULTS, // the discipline workbook: where served tours/confinements are read, and what is written back (tracker.js)
 };
 
 // Blank templates that older versions kept in the dump folder: never listed as paperwork.
@@ -88,8 +91,9 @@ export class Store extends EventEmitter {
    * @param {string} o.metaDir     where everything closet learns is kept
    * @param {string} o.templatesDir bundled blank templates
    * @param {number} [o.workers]   parser threads
+   * @param {object} [o.mailer]    sends email ({ status(), send(msg) }); absent means notifications are unavailable
    */
-  constructor({ dumpDir, metaDir, templatesDir, workers }) {
+  constructor({ dumpDir, metaDir, templatesDir, workers, mailer }) {
     super();
     this.dump = path.resolve(dumpDir);
     this.meta = path.resolve(metaDir);
@@ -105,6 +109,7 @@ export class Store extends EventEmitter {
         "renders/<id>/     cached page images used by the app",
         "templates/        cached geometry of the blank template forms",
         "names.json        name spellings you confirmed (typo answers)",
+        "notify.json       email contacts, automatic-update choices and the send log (no passwords)",
         "settings.json     app settings", "",
         "Deleting renders/ or templates/ is safe (they are rebuilt). forms/ holds your edits.", "",
       ].join("\n"));
@@ -120,6 +125,8 @@ export class Store extends EventEmitter {
     this.namesPath = path.join(this.meta, "names.json");
     this.names = this.loadNames();
     this.sync = new Sync(this);
+    this.notify = new Notifier(this, { mailer, parserVersion: PARSER_VERSION });
+    this.tracker = new Tracker(this);
     if (this.settings.dump_mode === "sync") this.sync.activate();
     for (const f of fs.readdirSync(this.formsDir)) {
       if (!f.endsWith(".json")) continue;
@@ -161,6 +168,8 @@ export class Store extends EventEmitter {
     this.watcher?.close();
     clearInterval(this.poller);
     clearTimeout(this.scanTimer);
+    this.notify.close();
+    this.tracker.close();
     await this.pool.stop();
   }
 
@@ -173,7 +182,9 @@ export class Store extends EventEmitter {
     delete user.template_files; // templates ship with the app now
     for (const [k, v] of Object.entries(user)) {
       if (!(k in DEFAULT_SETTINGS)) continue;
-      if (v && typeof v === "object" && typeof s[k] === "object") Object.assign(s[k], v);
+      if (k === "tracker") {
+        try { s.tracker = mergeTracker(s.tracker, v); } catch { /* unusable saved values: back to the defaults */ }
+      } else if (v && typeof v === "object" && typeof s[k] === "object") Object.assign(s[k], v);
       else s[k] = v;
     }
     writeJson(file, s);
@@ -191,17 +202,24 @@ export class Store extends EventEmitter {
     for (const v of Object.values(patch?.bulk_initials || {})) {
       if (typeof v !== "string" || v.length > 8 || /[^ -~]/.test(v)) throw new Error("Initials are 8 printable characters at most");
     }
+    let trackerChanged = false;
+    if (patch?.tracker) {
+      const merged = mergeTracker(this.settings.tracker, patch.tracker);
+      trackerChanged = merged.path !== this.settings.tracker.path || JSON.stringify(merged.served) !== JSON.stringify(this.settings.tracker.served);
+      patch = { ...patch, tracker: merged };
+    }
     if (patch?.dump_mode !== undefined && !["quick", "sync"].includes(patch.dump_mode)) throw new Error("Unknown dump mode");
     for (const [k, v] of Object.entries(patch || {})) {
       if (!(k in DEFAULT_SETTINGS)) continue;
       if (k === "position_tolerance_pt" && v !== this.settings[k]) reread = true;
-      if (k === "sync_folders") this.settings[k] = v;
+      if (k === "sync_folders" || k === "tracker") this.settings[k] = v;
       else if (v && typeof v === "object" && typeof this.settings[k] === "object") Object.assign(this.settings[k], v);
       else this.settings[k] = v;
     }
     if (this.settings.dump_mode === "sync") this.sync.activate();
     writeJson(path.join(this.meta, "settings.json"), this.settings);
     if (reread) for (const id of this.metas.keys()) this.reparse(id);
+    if (trackerChanged) this.tracker.pull();
     this.bump();
     return this.settings;
   }
@@ -339,6 +357,7 @@ export class Store extends EventEmitter {
     }
     fs.rmSync(this.namesPath, { force: true });
     this.names = this.loadNames();
+    this.notify.reset(); // contacts are kept; what was announced is not
     Object.assign(this.status, { state: "idle", done: 0, total: 0, current: null });
     this.bump();
     return { cleared: n, ...this.scan() };

@@ -49,7 +49,7 @@ after(async () => {
 });
 
 test("export: one zip file with the data in it", async () => {
-  await go("settings");
+  await go("settings/data");
   const out = dir("saved", "my backup.zip");
   await stubSave(out);
   await page.click("#backupExport");

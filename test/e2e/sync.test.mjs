@@ -74,17 +74,19 @@ after(async () => {
 });
 
 test("settings: quick dump is the default, the packet is off, and sync folders only show in sync mode", async () => {
-  await go("settings");
+  await go("settings/routing");
   assert.equal(await page.inputValue('[data-set="dump_mode"]'), "quick");
   assert.equal(await page.inputValue('[data-set="print_packet"]'), "0");
   assert.equal((await page.$$("[data-sfc]")).length, 0, "no folder pickers in quick mode");
+  await go("settings/data");
   assert.ok(await page.$("#quickChoose"), "quick dump folder shown in quick mode");
   await go("paperwork");
   assert.match(await page.textContent("#quickDump"), /Quick dump/);
-  await go("settings");
+  await go("settings/routing");
   await page.selectOption('[data-set="dump_mode"]', "sync");
   await page.waitForSelector("[data-sfc]");
   assert.equal((await page.$$("[data-sfc]")).length, 12, "five steps (send + returned), complete (send), new paperwork (returned)");
+  await go("settings/data");
   assert.equal(await page.$("#quickChoose"), null, "quick dump folder hidden in sync mode");
   await go("paperwork");
   assert.match(await page.textContent("#quickDump"), /Sync/);
@@ -103,7 +105,7 @@ test("folders: the dump folder can't be used; the rest are saved", async () => {
     intake: { pull: root + "/intake" },
   } }), dir("sync").split(path.sep).join("/"));
   for (const d of ["back recipient", "back aoc", "intake"]) fs.mkdirSync(dir("sync", d), { recursive: true });
-  await go("settings");
+  await go("settings/routing");
   assert.match(await page.textContent(".settings"), /send recipient/);
 });
 
@@ -219,8 +221,9 @@ test("Review pane form preview: wider than before (~316px), zoomable, and expand
 });
 
 test("switching back to Quick dump restores the old button", async () => {
-  await go("settings");
+  await go("settings/routing");
   await page.selectOption('[data-set="dump_mode"]', "quick");
+  await go("settings/data");
   await page.waitForSelector("#quickChoose");
   await go("paperwork");
   assert.match(await page.textContent("#quickDump"), /Quick dump/);

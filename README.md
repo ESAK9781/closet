@@ -93,6 +93,33 @@ copy** to replace it with a newer one (same filename, so your edits and signatur
 **Download by signature** in Paperwork copies every form still awaiting a chosen signature into a
 folder you pick, for printing or routing a batch at once.
 
+### Email notifications
+
+**Settings → Push notifications** holds everything for email; the **Notifications** tab sends it.
+
+- **Gmail:** connect a Gmail account with an *app password* (the **i** button next to the heading
+  walks through making one; Google requires 2-Step Verification). It's checked with Google before
+  it's saved, kept encrypted by the operating system in closet's per-computer config, and never put
+  in the metadata folder or in backups.
+- **Contact list:** import a spreadsheet (.xlsx, .csv, .tsv) in any layout, or add people by hand.
+  closet finds every email address and takes the name from the cells to its left, then matches it
+  to the nearest recipient name on your forms ("Doe, John A.", "C2C John Doe" and "John Doe" are one
+  person; a name within two letters is a close match, marked "Check match"). Everything is editable
+  in the list, and a re-import never overwrites your corrections. When a new cadet shows up who
+  isn't linked to an email, closet asks whether a similar-looking contact is theirs (in the class
+  year question when it's being asked, or on its own).
+- **Sending:** pick everyone with an email, or a few, write a message, and each person gets it
+  followed by a table of their active forms: where each is in processing, and its rewards or
+  sanctions. Preview, **Send a test to me**, and a recent-activity log are on the tab. An optional
+  signature (a switch in settings) is added at the very end.
+- **Automatic updates:** off for everyone. Turn them on, tick the steps that count, and opt people
+  in (one by one, by class year, or all). Turning them on announces only what changes afterwards,
+  they go out only while closet is open, and a change that would email more than 20 people at once is
+  held and reported instead of sent.
+
+Nothing breaks without an account: sending is disabled with the reason shown, and automatic
+updates can't be turned on.
+
 ### Naming paperwork
 
 Name PDFs `Recipient_PosOrNeg_FormType_Reason.pdf`, e.g. `John Doe_Neg_F10_Uniform Violation.pdf`.
@@ -142,6 +169,33 @@ Any step can be recorded by hand when someone signs later.
 Category, Reason Details, Month, Name, Issuer, Pos/Neg, CDNA, Passes, Demerits, Tours,
 Confinements, Other. Choose **Copy and mark as logged**, click the first empty Date cell, and paste.
 
+### Served tours and confinements
+
+Tours and confinements are *assigned* on Form 10s; what was *served* is written down by hand, so
+closet reads it from a workbook. **Settings → Discipline sheet** holds all of this; the **Balances**
+tab shows the result.
+
+- **The workbook:** choose an .xlsx (Google Sheets: File → Download → Microsoft Excel), or press
+  **Create new workbook** for a blank one with a conduct log, a serving log (Tour / Confinement
+  dropdown) and cadet balances that add themselves up. Only the serving log is read, and only
+  completed discipline: a row needs a name, a tour or confinement, and an amount. It's read again
+  whenever the file changes, and reading never alters it.
+- **Balances:** for every cadet, tours and confinements assigned, served and left (assigned minus
+  served, never below zero). Names in the sheet are matched the way names are everywhere else
+  ("Doe, John" = "John Doe", small typos tolerated); anyone with no paperwork is listed as *Not on file*.
+- **Layout is settings:** the sheet name, header row, every column heading, and the words in the
+  type column. Defaults match the CS07 tracker. If the headings aren't on the header row, closet
+  looks for them near the top.
+- **Writing back (off by default):** turn on *Allow writing*, then **Write to workbook** replaces
+  every row of the conduct log with closet's records, one per recipient. You choose each column's
+  heading and what goes in it. A copy of the workbook is saved first (`metadata/sheet-backups`), the
+  serving log is never written, other columns and sheets are left alone, and the workbook must be
+  closed in Excel. Optionally it also fills in the cadet names on the balances sheet so the sheet's
+  own formulas can total them.
+- **In emails:** each cadet's email shows tours and confinements left to serve (with the served and
+  assigned counts behind them). **Settings → Push notifications → What the emails say** switches the
+  table, each of its columns, which forms are listed, the balances, the totals line and the footer.
+
 ## The metadata folder
 
 | Path | What it is |
@@ -150,7 +204,10 @@ Confinements, Other. Choose **Copy and mark as logged**, click the first empty D
 | `renders/<id>/` | Page images for the app (safe to delete; rebuilt) |
 | `templates/` | Cached template geometry (safe to delete; rebuilt) |
 | `names.json` | Name spellings you confirmed |
+| `notify.json` | Email contacts, automatic-update choices, signature and send log (never a password) |
 | `settings.json` | Tracker labels, month format, tolerance, sync folders, remembered initials, and so on |
+| `served.json` | What the discipline workbook's serving log said last time it was read |
+| `sheet-backups/` | The last ten copies of the workbook, saved before closet wrote into it |
 | `sync.json` | Sync state: when it started, what closet put in the send folders, files waiting for a decision |
 | `backups/` | The original of any PDF closet edited (bulk initials, approval stamp) |
 

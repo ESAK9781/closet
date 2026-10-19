@@ -178,7 +178,7 @@ test("export filter: only positive, only negative, or off", async () => {
 });
 
 test("clear metadata and rescan", async () => {
-  await go("settings");
+  await go("settings/data");
   await page.click("#resetAll");
   assert.match(await respond("Clear and rescan"), /Clear all metadata/);
   // wait for the reset itself to land (edits gone) before waiting for the re-read to finish

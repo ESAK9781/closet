@@ -8,8 +8,10 @@
 # Parsed paperwork, page images and edits (personal information)
 /metadata/
 
-# Export of the official discipline tracker (personal information)
-/CS07 Discipline Tracker_google_sheet_format/
+# Discipline tracker workbooks and exports (personal information)
+*.xlsx
+*.xlsm
+*.xls
 
 # Build output and dependencies
 /node_modules/

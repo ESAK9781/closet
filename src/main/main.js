@@ -4,13 +4,14 @@
 // scheme. The UI talks to the store through one IPC channel that keeps the REST-style paths the
 // app has always used, and the store pushes a "changed" event instead of the UI polling.
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, protocol, screen, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, protocol, safeStorage, screen, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createBackup, restoreBackup, verifyBackup } from "../core/backup.js";
 import { Store } from "../core/store.js";
+import { createMailer } from "./mailer.js";
 import { createUpdater, RELEASES_URL } from "./updater.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -67,10 +68,11 @@ const metaDirFor = (dumpDir) => path.join(path.dirname(path.resolve(dumpDir)), "
 let store = null;
 let win = null;
 let updater = null;
+const mailer = createMailer({ config: () => config, save: () => saveConfig(), safeStorage });
 
 async function openStore() {
   if (store) await store.close();
-  store = new Store({ dumpDir: config.dumpDir, metaDir: metaDirFor(config.dumpDir), templatesDir: TEMPLATES });
+  store = new Store({ dumpDir: config.dumpDir, metaDir: metaDirFor(config.dumpDir), templatesDir: TEMPLATES, mailer });
   store.on("changed", (v) => win?.webContents.send("closet:changed", v));
   win?.webContents.send("closet:changed", -1);
 }
@@ -82,7 +84,10 @@ async function route(method, url, body) {
   const q = new URLSearchParams(qs || "");
   const m = (re) => re.exec(p);
   let x;
-  if (method === "GET" && p === "/api/state") return { ...store.snapshot(), quick_dump_dir: config.quickDumpDir };
+  if (method === "GET" && p === "/api/state") {
+    const snap = store.snapshot();
+    return { ...snap, quick_dump_dir: config.quickDumpDir, notify: store.notify.summary(snap), tracker_owing: store.tracker.owing(snap) };
+  }
   if (method === "GET" && p === "/api/version") return { version: store.version, status: { ...store.status, queued: store.queue.length + store.inFlight.size } };
   if (method === "POST" && p === "/api/quick-dump") return store.quickDump(config.quickDumpDir);
   if (method === "GET" && p === "/api/bulk-step") {
@@ -92,6 +97,24 @@ async function route(method, url, body) {
   }
   if (method === "POST" && p === "/api/bulk-step") return store.bulkStep(String(body?.step || ""), body?.initials, Array.isArray(body?.ids) ? body.ids.map(String) : null);
   if ((x = m(/^\/api\/forms\/([0-9a-f]+)\/approve-aoc$/)) && method === "POST") return store.approveAoc(x[1]);
+  if (method === "GET" && p === "/api/notify") return store.notify.view(store.snapshot());
+  if (method === "POST" && p === "/api/notify/contacts") return store.notify.addContact({ name: body?.name, email: body?.email, cadet: body?.cadet || "" }, store.snapshot());
+  if (method === "POST" && p === "/api/notify/contacts/bulk") {
+    const ids = Array.isArray(body?.ids) ? body.ids.map(String) : [];
+    if (body?.delete === true) return { removed: store.notify.removeContacts(ids) };
+    if (typeof body?.auto === "boolean") return { changed: store.notify.setAutoFor(ids, body.auto) };
+    throw new Error("Nothing to do");
+  }
+  if ((x = m(/^\/api\/notify\/contacts\/([0-9a-f]+)$/)) && method === "PATCH") return store.notify.updateContact(x[1], body || {}, store.snapshot());
+  if (method === "POST" && p === "/api/notify/tie") { store.notify.answerTie(String(body?.id || ""), String(body?.cadet || ""), body?.yes === true); return { version: store.version }; }
+  if (method === "PUT" && p === "/api/notify/signature") return store.notify.setSignature(body || {});
+  if (method === "PUT" && p === "/api/notify/content") return store.notify.setContent(body || {});
+  if (method === "GET" && p === "/api/tracker") return store.tracker.view(store.snapshot());
+  if (method === "POST" && p === "/api/tracker/pull") return store.tracker.pull();
+  if (method === "POST" && p === "/api/tracker/push") return store.tracker.push();
+  if (method === "PUT" && p === "/api/notify/auto") return store.notify.setAuto(body || {});
+  if (method === "POST" && p === "/api/notify/preview") return store.notify.preview({ key: String(body?.key || ""), subject: body?.subject, message: body?.message }, store.snapshot());
+  if (method === "POST" && p === "/api/notify/send") return store.notify.send({ keys: body?.keys, subject: body?.subject, message: body?.message, test: body?.test === true }, store.snapshot());
   if (method === "POST" && p === "/api/sync/pull") return store.sync.pull();
   if (method === "POST" && p === "/api/sync/resolve") return store.sync.resolve(Array.isArray(body?.decisions) ? body.decisions : []);
   if (method === "POST" && p === "/api/sync/push") return store.sync.push();
@@ -198,6 +221,76 @@ function registerIpc() {
     try {
       store.updateSettings({ sync_folders: { [key]: { [dir]: "" } } });
       return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  // ---------------------------------------------------------------- email
+  ipcMain.handle("closet:gmail-save", async (_e, form) => {
+    try {
+      await mailer.connect({ user: form?.user, password: form?.password, from_name: form?.fromName });
+      store.bump();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:gmail-clear", () => {
+    mailer.disconnect();
+    try { store.notify.setAuto({ enabled: false }); } catch { /* already off */ }
+    store.bump();
+    return { ok: true };
+  });
+  ipcMain.handle("closet:gmail-test", async () => {
+    const st = mailer.status();
+    if (!st.configured) return { ok: false, error: st.reason };
+    try {
+      await mailer.send({ to: [st.user], subject: "closet test email", text: "This is a test from closet. Your Gmail account is connected and can send email.", html: "<p>This is a test from closet. Your Gmail account is connected and can send email.</p>" });
+      return { ok: true, to: st.user };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:import-contacts", async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: "Choose a spreadsheet of names and emails",
+      filters: [{ name: "Spreadsheet (xlsx, csv, tsv)", extensions: ["xlsx", "xlsm", "csv", "tsv", "txt"] }], properties: ["openFile"],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false };
+    try {
+      return { ok: true, report: store.notify.importFile(r.filePaths[0], store.snapshot()) };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  // ---------------------------------------------------------------- the discipline workbook
+  ipcMain.handle("closet:choose-sheet", async () => {
+    const cur = store.settings.tracker?.path;
+    const r = await dialog.showOpenDialog(win, {
+      title: "Choose the discipline tracker workbook", defaultPath: cur || undefined,
+      filters: [{ name: "Excel workbook", extensions: ["xlsx", "xlsm"] }], properties: ["openFile"],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false };
+    try {
+      store.updateSettings({ tracker: { path: r.filePaths[0] } });
+      return { ok: true, path: r.filePaths[0], pull: store.tracker.pull() };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:create-sheet", async () => {
+    const r = await dialog.showSaveDialog(win, {
+      title: "Create a new discipline tracker workbook",
+      defaultPath: path.join(app.getPath("documents"), "Discipline Tracker.xlsx"),
+      filters: [{ name: "Excel workbook", extensions: ["xlsx"] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false };
+    try {
+      if (insideOf(store.meta, r.filePath) || insideOf(store.dump, r.filePath)) throw new Error("Choose a place outside closet's dump and metadata folders.");
+      const made = store.tracker.createTemplate(r.filePath);
+      const adopt = !store.settings.tracker?.path;
+      if (adopt) store.updateSettings({ tracker: { path: r.filePath } });
+      return { ok: true, ...made, adopted: adopt };
     } catch (e) {
       return { ok: false, error: String(e?.message || e) };
     }

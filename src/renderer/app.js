@@ -51,6 +51,8 @@ const I = {
   archive: '<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
   upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
+  notifications: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
+  balances: '<path d="M12 3v18M5 7h14M7 7l-3 7a3 3 0 0 0 6 0zM17 7l-3 7a3 3 0 0 0 6 0z"/>',
 };
 const icon = (n, cls = "") => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
 
@@ -77,6 +79,12 @@ const S = {
   wide: false,       // review: preview takes the whole card (queue and fields tucked away) so print is readable
   syncPick: null,
   stale: false,
+  setTab: "general", // Settings sub-tab
+  tv: null,          // discipline workbook + balances, fetched when Balances or its settings are open
+  balQ: "", balF: "owing", // Balances: search and filter
+  nv: null,          // notifications data (contacts, people, log), fetched when a notifications screen is open
+  cQ: "", cFilter: "all", cSel: new Set(), importReport: null, // contact list in Settings
+  nSel: new Set(), nSubject: "Conduct paperwork update", nMessage: "", nQ: "", nClass: "all", nFilter: "all", sending: false, // Notifications tab
 };
 
 const blankEdit = () => ({ overrides: {}, fields: {}, notes: undefined, logged: undefined });
@@ -122,7 +130,9 @@ function toast(msg, err = false) {
 // ------------------------------------------------------------------ in-app dialogs
 // Electron has no window.prompt(), and confirm() is a blocking native box, so questions are asked
 // in the page. Resolves with the chosen value, the typed text, or null when dismissed (Esc).
-function ask({ title, message = "", input = null, select = null, choices = null, danger = false, wide = false }) {
+// `extra` adds a labelled dropdown under the message; its value is left in `ask.extra` when a button other than Cancel is pressed.
+function ask({ title, message = "", input = null, select = null, extra = null, choices = null, danger = false, wide = false }) {
+  ask.extra = null;
   return new Promise((resolve) => {
     const prev = document.activeElement;
     const scrim = document.createElement("div");
@@ -132,10 +142,12 @@ function ask({ title, message = "", input = null, select = null, choices = null,
       <h2 id="mTitle">${esc(title)}</h2>${message ? `<div class="modal-msg">${message}</div>` : ""}
       ${input ? `<input class="input" id="mInput" value="${esc(input.value || "")}" placeholder="${esc(input.placeholder || "")}" autocomplete="off" spellcheck="false"><div class="modal-err" id="mErr" role="alert"></div>` : ""}
       ${select ? `<select class="select" id="mSelect" style="width:100%;margin-top:10px">${select.options.map(([v, l]) => `<option value="${esc(v)}" ${v === select.value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>` : ""}
+      ${extra ? `<label class="modal-extra"><span>${esc(extra.label)}</span><select class="select" id="mExtra">${extra.options.map(([v, l]) => `<option value="${esc(v)}" ${v === extra.value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>` : ""}
       <div class="modal-actions">${btns.map((b, i) => `<button type="button" class="btn ${b.primary ? (danger ? "danger" : "primary") : "ghost"}" data-i="${i}">${esc(b.label)}</button>`).join("")}</div></div>`;
     document.body.appendChild(scrim);
     const field = $("#mInput", scrim);
     const sel = $("#mSelect", scrim);
+    const ex = $("#mExtra", scrim);
     const done = (v) => {
       scrim.remove();
       document.removeEventListener("keydown", onKey, true);
@@ -144,7 +156,8 @@ function ask({ title, message = "", input = null, select = null, choices = null,
     };
     const pick = (b) => {
       if (b.value === null) return done(null);
-      if (sel) return done(sel.value);
+      ask.extra = ex ? ex.value : null;
+      if (sel) return done(b.primary ? sel.value : b.value);
       if (!input) return done(b.value);
       const text = field.value.trim();
       const err = input.validate ? input.validate(text) : "";
@@ -234,6 +247,8 @@ async function load() {
     $("#main").innerHTML = `<div class="banner">${icon("alert")}<span>closet couldn't load its data: ${esc(e.message)}</span></div>`;
     return;
   }
+  await refreshNotify();
+  await refreshTracker();
   renderNav();
   renderFoot(S.data.status);
   const editing = document.activeElement && $("#main").contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
@@ -241,6 +256,7 @@ async function load() {
   else renderView();
   if (S.detail && S.host === "drawer" && !isDirty()) openForm(S.detail.id, { keepPage: true, silent: true });
   checkNamePairs();
+  checkContactTies(); // skips itself while the name-typo question is open
 }
 
 // Two recipient names within two characters of each other are probably one cadet with a typo.
@@ -320,7 +336,9 @@ function renderNav() {
     ["paperwork", "Paperwork", active().length],
     ["review", "Review", review, review > 0],
     ["cadets", "Cadets", ""],
+    ["balances", "Balances", S.data.tracker_owing || ""],
     ["export", "Sheet export", unlogged],
+    ["notifications", "Notifications", ""],
     ["archive", "Archive", archived().length || ""],
     ["settings", "Settings", ""],
   ];
@@ -342,14 +360,18 @@ function renderFoot(st) {
 
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
-  const [view, q] = h.split("?");
-  const valid = ["overview", "paperwork", "review", "cadets", "export", "archive", "settings"];
+  const [path, q] = h.split("?");
+  const [view, sub] = path.split("/");
+  const valid = ["overview", "paperwork", "review", "cadets", "balances", "export", "notifications", "archive", "settings"];
   S.view = valid.includes(view) ? view : "overview";
+  if (S.view === "settings" && SET_TABS.some(([k]) => k === sub)) S.setTab = sub;
   if (S.host === "review" && S.view !== "review") closeDetail();
   if (S.host === "drawer" && !(q || "").includes("f=")) {
     if (!(await okToDiscard())) return;
     closeDetail();
   }
+  await refreshNotify();
+  await refreshTracker();
   renderNav();
   renderView();
   const params = new URLSearchParams(q || "");
@@ -359,7 +381,7 @@ window.addEventListener("hashchange", route);
 
 function renderView() {
   if (!S.data) return;
-  const views = { overview: viewOverview, paperwork: viewPaperwork, review: viewReview, cadets: viewCadets, export: viewExport, archive: viewArchive, settings: viewSettings };
+  const views = { overview: viewOverview, paperwork: viewPaperwork, review: viewReview, cadets: viewCadets, balances: viewBalances, export: viewExport, notifications: viewNotifications, archive: viewArchive, settings: viewSettings };
   views[S.view]();
 }
 
@@ -590,7 +612,8 @@ function matchesFilters(f, F, skip = "") {
   if (skip !== "pn" && F.pn !== "all" && r.pos_neg !== F.pn) return false;
   if (skip !== "step" && F.step !== "all") {
     const st = firstOpen(f);
-    if (F.step === "open" ? !st || st === "complete" : st !== F.step) return false;
+    if (F.step === "review") { if (!f.needs_review) return false; }
+    else if (F.step === "open" ? !st || st === "complete" : st !== F.step) return false;
   }
   if (q) {
     const hay = [f.filename, r.recipients, r.reason_category, r.reason_details, r.issuer, r.class_year, f.notes].join(" ").toLowerCase();
@@ -626,7 +649,7 @@ function renderFilters() {
   const pool = (S.data.forms || []).filter((f) => !f.archived);
   const facet = (key) => pool.filter((f) => matchesFilters(f, S.f, key));
   const stepF = facet("step");
-  const steps = [["all", "Any progress", stepF.length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
+  const steps = [["all", "Any progress", stepF.length], ["review", "Needs review", stepF.filter((f) => f.needs_review).length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
     ...FLAGS.map(([k, short]) => [k, `Needs ${short}`, stepF.filter((f) => firstOpen(f) === k).length]), ["complete", "Fully complete", stepF.filter((f) => firstOpen(f) === "complete").length]];
   const typeF = facet("type");
   const types = [["all", "Any form", typeF.length], ["F10", "Form 10", typeF.filter((f) => f.record.form_type === "F10").length], ["F174", "AF 174", typeF.filter((f) => f.record.form_type === "F174").length]];
@@ -1221,15 +1244,24 @@ async function collectClassYears() {
   for (const [i, n] of names.entries()) {
     const k = nameKey(n);
     let y = (typedYears.length === names.length && normYear(typedYears[i])) || roster[k] || known[k];
-    if (!y) {
+    const tie = (S.data.notify?.ties || []).find((t) => t.key === nameKey(n)); // a contact that might be this cadet's email
+    if (!y || tie) {
       const ans = await ask({
-        title: `Class year for ${n}?`,
-        message: `Recipient ${i + 1} of ${names.length}. Leave it blank if you don't know it.`,
-        input: { placeholder: "e.g. 2028", validate: (t) => (!t || normYear(t) ? "" : `"${t}" isn't a class year. Enter something like 2028.`) },
+        title: `${y ? "Email for" : "Class year for"} ${n}?`,
+        message: `Recipient ${i + 1} of ${names.length}. ${y ? "" : "Leave the class year blank if you don't know it."}`,
+        input: y ? null : { placeholder: "e.g. 2028", validate: (t) => (!t || normYear(t) ? "" : `"${t}" isn't a class year. Enter something like 2028.`) },
+        extra: tie ? { label: `Is one of these ${n}'s email?`, options: [...tie.candidates.map((c) => [c.id, `Yes: ${c.name} <${c.email}>`]), ["", "Not sure yet"], ["no", "No, none of these"]], value: tie.candidates[0].id } : null,
         choices: [{ label: "Cancel save", value: null }, { label: i + 1 < names.length ? "Next" : "Save", value: true, primary: true }],
       });
       if (ans === null) return false;
-      y = ans ? normYear(ans) : "";
+      if (!y) y = ans && ans !== true ? normYear(ans) : "";
+      const pick = ask.extra;
+      if (tie && pick) {
+        try {
+          if (pick === "no") for (const c of tie.candidates) await api("/api/notify/tie", { method: "POST", body: { id: c.id, cadet: n, yes: false } });
+          else await api("/api/notify/tie", { method: "POST", body: { id: pick, cadet: n, yes: true } });
+        } catch (err) { toast("Couldn't save the email link: " + err.message, true); }
+      }
     }
     years.push(y);
   }
@@ -1475,41 +1507,43 @@ function viewArchive() {
 }
 
 // ------------------------------------------------------------------ settings
-function viewSettings() {
-  const s = S.data.settings;
-  const row = (title, desc, control) => `<div class="set-row"><div><h3>${title}</h3><p>${desc}</p></div><div>${control}</div></div>`;
-  $("#main").innerHTML = head("Settings", "How rows are written for the tracker and how forms are read.") + `
-    <div class="settings">
+// Settings is split into sub-tabs behind a bar fixed to the top of the page, so a setting is one
+// click away instead of somewhere down a long scroll. The open tab lives in the URL (#/settings/data).
+const SET_TABS = [
+  ["general", "General", "Tracker values and how forms are read"],
+  ["routing", "Routing and sync", "Bulk initials, quick dump, sync folders"],
+  ["sheet", "Discipline sheet", "The workbook that tracks served tours and confinements"],
+  ["notify", "Push notifications", "Gmail, the contact list, what the emails say, automatic updates"],
+  ["data", "Data and backup", "Folders, backup and restore, start over"],
+  ["updates", "Updates", "Automatic updates for closet itself"],
+];
+
+const setRow = (title, desc, control) => `<div class="set-row"><div><h3>${title}</h3><p>${desc}</p></div><div>${control}</div></div>`;
+const setSelect = (key, opts, cur, bool = false) => `<select class="select" data-set="${key}" ${bool ? 'data-bool="1"' : ""}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(cur) === String(v) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+
+function settingsGeneral(s) {
+  return `
     <section class="panel"><div class="panel-head"><h2>Tracker values</h2><span class="sub">match the dropdown options in your sheet</span></div><div class="panel-body">
-      ${row("Form type labels", "Written in the Form Type column.", `<div class="pair"><input class="input" data-set="form_type_labels.F10" value="${esc(s.form_type_labels.F10)}" aria-label="F10 label"><input class="input" data-set="form_type_labels.F174" value="${esc(s.form_type_labels.F174)}" aria-label="F174 label"></div>`)}
-      ${row("Pos/Neg labels", "Written in the Pos/Neg column.", `<div class="pair"><input class="input" data-set="pos_label" value="${esc(s.pos_label)}" aria-label="Positive label"><input class="input" data-set="neg_label" value="${esc(s.neg_label)}" aria-label="Negative label"></div>`)}
-      ${row("Month column", "How the Month column is written.", `<select class="select" data-set="month_format">${[["name", "September"], ["short", "Sep"], ["name_year", "September 2026"], ["iso", "2026-09"], ["number", "9"]].map(([v, l]) => `<option value="${v}" ${s.month_format === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
-    </div></section>
-    <section class="panel"><div class="panel-head"><h2>Bulk initials</h2><span class="sub">for the SQ/CCF and Cadet CC buttons on Paperwork</span></div><div class="panel-body">
-      ${row("SQ/CCF initials", "Entered once and remembered. Written into the SQ/CCF initials box when you use the SQ/CCF initials button.", `<input class="input" maxlength="8" data-set="bulk_initials.sqccf_processed" value="${esc(s.bulk_initials?.sqccf_processed || "")}" aria-label="SQ/CCF initials">`)}
-      ${row("Fill in today's date for SQ/CCF", "The SQ/CCF button also writes today's date in the log-in date box when it's empty. A date already on the form is never changed.", `<select class="select" data-set="first_shirt_fill_date" data-bool="1">${[["1", "Yes, fill it in"], ["0", "No, initials only"]].map(([v, l]) => `<option value="${v}" ${(s.first_shirt_fill_date ? "1" : "0") === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
-      ${row("Cadet Commander initials", "Entered once and remembered. The Cadet CC button also dates the box (Section V, box 3) with today's date.", `<input class="input" maxlength="8" data-set="bulk_initials.cadet_cc_initialed" value="${esc(s.bulk_initials?.cadet_cc_initialed || "")}" aria-label="Cadet Commander initials">`)}
+      ${setRow("Form type labels", "Written in the Form Type column.", `<div class="pair"><input class="input" data-set="form_type_labels.F10" value="${esc(s.form_type_labels.F10)}" aria-label="F10 label"><input class="input" data-set="form_type_labels.F174" value="${esc(s.form_type_labels.F174)}" aria-label="F174 label"></div>`)}
+      ${setRow("Pos/Neg labels", "Written in the Pos/Neg column.", `<div class="pair"><input class="input" data-set="pos_label" value="${esc(s.pos_label)}" aria-label="Positive label"><input class="input" data-set="neg_label" value="${esc(s.neg_label)}" aria-label="Negative label"></div>`)}
+      ${setRow("Month column", "How the Month column is written.", setSelect("month_format", [["name", "September"], ["short", "Sep"], ["name_year", "September 2026"], ["iso", "2026-09"], ["number", "9"]], s.month_format))}
     </div></section>
     <section class="panel"><div class="panel-head"><h2>Reading forms</h2></div><div class="panel-body">
-      ${row("AF 174 commander block", "Whether the Commander's Comments block on an AF 174 counts as the AOC/AMT signature.", `<select class="select" data-set="f174_commander_role">${[["aoc_signed", "Counts as AOC/AMT"], ["none", "Doesn't count"]].map(([v, l]) => `<option value="${v}" ${s.f174_commander_role === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
-      ${row("Position tolerance", "A field counts as matching the template when every edge is within this many points (1 pt ≈ 1 px at 72 dpi). Changing it re-reads every form.", `<input class="input" type="number" min="2" max="40" step="1" data-set="position_tolerance_pt" value="${esc(s.position_tolerance_pt)}">`)}
-    </div></section>
-    <section class="panel"><div class="panel-head"><h2>Updates</h2></div><div class="panel-body" id="updBody"></div></section>
-    <section class="panel"><div class="panel-head"><h2>Backup and restore</h2><span class="sub">before trying something risky</span></div><div class="panel-body">
-      ${row("Export a backup", "Saves everything into one zip file: every PDF in the dump folder, your edits, reviews, name answers, settings, sync state, and the originals closet kept when it edited a PDF. Page images are left out (they're rebuilt).",
-        `<button class="btn" type="button" id="backupExport">${icon("download")}Export backup…</button>`)}
-      ${row("Restore from a backup", "Replaces the PDFs in the dump folder and everything in the metadata folder with what's in a backup file. The backup is checked first, and what you have now is saved to a safety backup before anything is replaced.",
-        `<button class="btn" type="button" id="backupImport" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("upload")}Import backup…</button>`)}
-    </div></section>
-    <section class="panel"><div class="panel-head"><h2>Start over</h2></div><div class="panel-body">
-      ${row("Clear metadata and rescan", "Forgets everything closet has recorded and reads every PDF in the dump folder again from scratch. This erases your edits, reviews, signatures set by hand, archive choices, and “logged” marks. Settings are kept, and the PDFs themselves are never touched.",
-        `<button class="btn" type="button" id="resetAll" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("refresh")}Clear metadata and rescan</button>`)}
+      ${setRow("AF 174 commander block", "Whether the Commander's Comments block on an AF 174 counts as the AOC/AMT signature.", setSelect("f174_commander_role", [["aoc_signed", "Counts as AOC/AMT"], ["none", "Doesn't count"]], s.f174_commander_role))}
+      ${setRow("Position tolerance", "A field counts as matching the template when every edge is within this many points (1 pt ≈ 1 px at 72 dpi). Changing it re-reads every form.", `<input class="input" type="number" min="2" max="40" step="1" data-set="position_tolerance_pt" value="${esc(s.position_tolerance_pt)}">`)}
+    </div></section>`;
+}
+
+function settingsRouting(s) {
+  return `
+    <section class="panel"><div class="panel-head"><h2>Bulk initials</h2><span class="sub">for the SQ/CCF and Cadet CC buttons on Paperwork</span></div><div class="panel-body">
+      ${setRow("SQ/CCF initials", "Entered once and remembered. Written into the SQ/CCF initials box when you use the SQ/CCF initials button.", `<input class="input" maxlength="8" data-set="bulk_initials.sqccf_processed" value="${esc(s.bulk_initials?.sqccf_processed || "")}" aria-label="SQ/CCF initials">`)}
+      ${setRow("Fill in today's date for SQ/CCF", "The SQ/CCF button also writes today's date in the log-in date box when it's empty. A date already on the form is never changed.", setSelect("first_shirt_fill_date", [["1", "Yes, fill it in"], ["0", "No, initials only"]], s.first_shirt_fill_date ? "1" : "0", true))}
+      ${setRow("Cadet Commander initials", "Entered once and remembered. The Cadet CC button also dates the box (Section V, box 3) with today's date.", `<input class="input" maxlength="8" data-set="bulk_initials.cadet_cc_initialed" value="${esc(s.bulk_initials?.cadet_cc_initialed || "")}" aria-label="Cadet Commander initials">`)}
     </div></section>
     <section class="panel"><div class="panel-head"><h2>Quick dump and sync</h2><span class="sub">how paperwork gets out for signatures</span></div><div class="panel-body">
-      ${row("Mode", "Quick dump copies every form into one folder, sorted by the next step it needs. Sync gives each step its own send and returned folders: pressing Sync pulls signed copies back in, then sends everything out again.",
-        `<select class="select" data-set="dump_mode">${[["quick", "Quick dump"], ["sync", "Sync"]].map(([v, l]) => `<option value="${v}" ${s.dump_mode === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
-      ${row("Combined print packet", "Also write one printable PDF (an index sheet plus every form waiting on AOC/AMT) into the AOC/AMT folder.",
-        `<select class="select" data-set="print_packet" data-bool="1">${[["0", "Off"], ["1", "On"]].map(([v, l]) => `<option value="${v}" ${(s.print_packet ? "1" : "0") === v ? "selected" : ""}>${l}</option>`).join("")}</select>`)}
+      ${setRow("Mode", "Quick dump copies every form into one folder, sorted by the next step it needs. Sync gives each step its own send and returned folders: pressing Sync pulls signed copies back in, then sends everything out again.", setSelect("dump_mode", [["quick", "Quick dump"], ["sync", "Sync"]], s.dump_mode))}
+      ${setRow("Combined print packet", "Also write one printable PDF (an index sheet plus every form waiting on AOC/AMT) into the AOC/AMT folder.", setSelect("print_packet", [["0", "Off"], ["1", "On"]], s.print_packet ? "1" : "0", true))}
       ${s.dump_mode === "sync" ? `<p class="sync-note">Sync has been on since ${esc(fmtStamp(S.data.sync?.since) || "just now")}: only files added to a returned folder after that are pulled${S.data.sync?.last_sync ? `. Last sync ${esc(fmtStamp(S.data.sync.last_sync))}` : ""}. A step with no folder is skipped. closet only ever removes copies it put in a send folder itself.</p>` : ""}
     </div></section>
     ${s.dump_mode === "sync" ? `<section class="panel"><div class="panel-head"><h2>Sync folders</h2><span class="sub">send = copies for signing, returned = signed copies come back</span></div><div class="panel-body">
@@ -1519,26 +1553,58 @@ function viewSettings() {
           return `<div class="sf"><span class="sf-l">${label}</span><div class="path">${path ? esc(path) : '<span class="dim">Not set, so this is skipped</span>'}</div>
             <div class="pair"><button class="btn small" type="button" data-sfc="${key}|${dir}">${icon("folder")}${path ? "Change…" : "Choose…"}</button>${path ? `<button class="btn small ghost" type="button" data-sfx="${key}|${dir}">Clear</button>` : ""}</div></div>`;
         };
-        return row(esc(name), esc(desc), (hasPush ? cell("push", "Send") : "") + (hasPull ? cell("pull", "Returned") : ""));
+        return setRow(esc(name), esc(desc), (hasPush ? cell("push", "Send") : "") + (hasPull ? cell("pull", "Returned") : ""));
       }).join("")}
-    </div></section>` : ""}
+    </div></section>` : ""}`;
+}
+
+function settingsData(s) {
+  return `
     <section class="panel"><div class="panel-head"><h2>Folders</h2></div><div class="panel-body">
-      ${row("Dump folder", "Where closet keeps your paperwork. By default it's inside the app's data folder, so you never need to open it: add PDFs with Add files or by dragging them onto the window. Nothing is ever moved or changed.",
+      ${setRow("Dump folder", "Where closet keeps your paperwork. By default it's inside the app's data folder, so you never need to open it: add PDFs with Add files or by dragging them onto the window. Nothing is ever moved or changed.",
         `<div class="path">${esc(S.data.dump_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="dumpOpen">${icon("folder")}Open</button><button class="btn small" type="button" id="dumpChoose">Change…</button></div>`)}
-      ${s.dump_mode === "sync" ? "" : row("Quick dump folder", "Where Quick dump writes its sorted folders and the AOC/AMT print packet. Copies only; each run refreshes the five step folders.",
+      ${s.dump_mode === "sync" ? "" : setRow("Quick dump folder", "Where Quick dump writes its sorted folders and the AOC/AMT print packet. Copies only; each run refreshes the five step folders.",
         `<div class="path">${esc(S.data.quick_dump_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="quickOpen">${icon("folder")}Open</button><button class="btn small" type="button" id="quickChoose">Change…</button></div>`)}
-      ${row("Metadata folder", "Cached reads, page images, and your edits. It sits next to the dump folder; back both up together.",
+      ${setRow("Metadata folder", "Cached reads, page images, and your edits. It sits next to the dump folder; back both up together.",
         `<div class="path">${esc(S.data.meta_dir)}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="metaOpen">${icon("folder")}Open</button></div>`)}
-      ${row("Templates", "The blank AFCW Form 10 and AF Form 174 every form is compared against. They're built into the app.", `<div class="path">Built in</div>`)}
-    </div></section></div>`;
-  closet.updates.state().then(renderUpdates);
-  $("#dumpOpen").onclick = () => closet.openFolder("dump");
-  $("#metaOpen").onclick = () => closet.openFolder("meta");
-  if ($("#quickOpen")) $("#quickOpen").onclick = () => closet.openFolder("quickdump");
-  if ($("#quickChoose")) $("#quickChoose").onclick = async () => {
+      ${setRow("Templates", "The blank AFCW Form 10 and AF Form 174 every form is compared against. They're built into the app.", `<div class="path">Built in</div>`)}
+    </div></section>
+    <section class="panel"><div class="panel-head"><h2>Backup and restore</h2><span class="sub">before trying something risky</span></div><div class="panel-body">
+      ${setRow("Export a backup", "Saves everything into one zip file: every PDF in the dump folder, your edits, reviews, name answers, the contact list, settings, sync state, and the originals closet kept when it edited a PDF. Page images are left out (they're rebuilt). The Gmail password is never included.",
+        `<button class="btn" type="button" id="backupExport">${icon("download")}Export backup…</button>`)}
+      ${setRow("Restore from a backup", "Replaces the PDFs in the dump folder and everything in the metadata folder with what's in a backup file. The backup is checked first, and what you have now is saved to a safety backup before anything is replaced.",
+        `<button class="btn" type="button" id="backupImport" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("upload")}Import backup…</button>`)}
+    </div></section>
+    <section class="panel"><div class="panel-head"><h2>Start over</h2></div><div class="panel-body">
+      ${setRow("Clear metadata and rescan", "Forgets everything closet has recorded and reads every PDF in the dump folder again from scratch. This erases your edits, reviews, signatures set by hand, archive choices, and “logged” marks. Settings and the contact list are kept, and the PDFs themselves are never touched.",
+        `<button class="btn" type="button" id="resetAll" style="border-color:rgba(226,85,85,.5);color:#f0a3a3">${icon("refresh")}Clear metadata and rescan</button>`)}
+    </div></section>`;
+}
+
+function settingsUpdates() {
+  return `<section class="panel"><div class="panel-head"><h2>Updates</h2></div><div class="panel-body" id="updBody"></div></section>`;
+}
+
+function viewSettings() {
+  const s = S.data.settings;
+  const tab = SET_TABS.some(([k]) => k === S.setTab) ? S.setTab : "general";
+  const body = { general: () => settingsGeneral(s), routing: () => settingsRouting(s), sheet: () => settingsSheet(), notify: () => settingsNotify(), data: () => settingsData(s), updates: settingsUpdates }[tab]();
+  const [, , blurb] = SET_TABS.find(([k]) => k === tab);
+  if (S.lastSetTab !== tab) { window.scrollTo(0, 0); S.lastSetTab = tab; } // a new tab starts at its top, not wherever the last one was scrolled
+  $("#main").innerHTML = head("Settings", esc(blurb)) +
+    `<nav class="set-tabs" aria-label="Settings sections">${SET_TABS.map(([k, label]) => `<a href="#/settings/${k}" ${k === tab ? 'aria-current="page"' : ""}>${esc(label)}</a>`).join("")}</nav>
+    <div class="settings ${tab === "notify" || tab === "sheet" ? "wide" : ""}">${body}</div>`;
+  if (tab === "updates") closet.updates.state().then(renderUpdates);
+  if (tab === "notify") bindSettingsNotify();
+  if (tab === "sheet") bindSettingsSheet();
+  const click = (sel, fn) => { const el = $(sel); if (el) el.onclick = fn; };
+  click("#dumpOpen", () => closet.openFolder("dump"));
+  click("#metaOpen", () => closet.openFolder("meta"));
+  click("#quickOpen", () => closet.openFolder("quickdump"));
+  click("#quickChoose", async () => {
     const dir = await closet.chooseQuickDumpFolder();
     if (dir) { toast(`Quick dump will use ${dir}`); await load(); }
-  };
+  });
   $$("[data-sfc]").forEach((b) => (b.onclick = async () => {
     const [key, dir] = b.dataset.sfc.split("|");
     const r = await closet.chooseSyncFolder(key, dir);
@@ -1549,10 +1615,10 @@ function viewSettings() {
     const r = await closet.clearSyncFolder(key, dir);
     if (r?.ok) { toast("Folder cleared. That step is skipped now."); await load(); } else if (r?.error) toast(r.error, true);
   }));
-  $("#dumpChoose").onclick = chooseDump;
-  $("#backupExport").onclick = exportBackup;
-  $("#backupImport").onclick = importBackup;
-  $("#resetAll").onclick = async () => {
+  click("#dumpChoose", chooseDump);
+  click("#backupExport", exportBackup);
+  click("#backupImport", importBackup);
+  click("#resetAll", async () => {
     const all = (S.data.forms || []).filter((f) => !f.missing);
     const n = all.length;
     const edited = all.filter((f) => f.reviewed || f.logged || f.archived || (f.record.overridden || []).length || f.notes).length;
@@ -1562,7 +1628,7 @@ function viewSettings() {
       (edited ? `${plural(edited, "form has", "forms have")} edits, reviews, archive, or logged marks. These will be lost.
 
 ` : "") +
-      "Settings are kept. The PDFs in the dump folder are not touched.";
+      "Settings and the contact list are kept. The PDFs in the dump folder are not touched.";
     const ok = await ask({
       title: "Clear all metadata and read everything again?",
       message: `<p>${esc(msg).replace(/\n\n/g, "</p><p>")}</p>`,
@@ -1577,7 +1643,7 @@ function viewSettings() {
       toast(`Metadata cleared. Reading ${plural(r.queued, "form")} again.`);
       await load();
     } catch (e) { toast("Couldn't clear metadata: " + e.message, true); }
-  };
+  });
   $$("[data-set]").forEach((el) => (el.onchange = async () => {
     const path = el.dataset.set.split(".");
     let v = el.type === "number" ? Number(el.value) : el.dataset.bool ? el.value === "1" : el.value;
@@ -1589,6 +1655,656 @@ function viewSettings() {
     } catch (e) { toast("Couldn't save: " + e.message, true); }
   }));
 }
+
+// ------------------------------------------------------------------ balances and the discipline workbook
+// What was assigned comes from the forms; what was served is read from the serving log of the
+// workbook chosen in Settings → Discipline sheet. Balance = assigned - served, never below zero.
+const needsTracker = () => S.view === "balances" || (S.view === "settings" && S.setTab === "sheet");
+async function refreshTracker() {
+  if (!needsTracker()) return;
+  try { S.tv = await api("/api/tracker"); } catch (e) { toast("Couldn't load balances: " + e.message, true); }
+}
+const owe = (b) => (b.left ? `<b class="owe">${b.left}</b>` : '<span class="dim">0</span>');
+
+function viewBalances() {
+  const tv = S.tv;
+  if (!tv) {
+    $("#main").innerHTML = head("Balances", "Tours and confinements assigned, served, and still owed.") + '<p class="dim">Loading…</p>';
+    refreshTracker().then(() => { if (S.view === "balances" && S.tv) viewBalances(); });
+    return;
+  }
+  const t = tv.totals;
+  const read = tv.pulled_at ? `Served counts read from the sheet ${esc(when(tv.pulled_at))}: ${plural(tv.entries, "serving record")}` : "";
+  $("#main").innerHTML = head("Balances", "Tours and confinements assigned on forms, served according to your discipline workbook, and still owed.",
+    tv.configured ? `<button class="btn small" type="button" id="tvPull">${icon("refresh")}Read the sheet now</button>` : "") + `
+    ${!tv.configured ? `<div class="banner info">${icon("info")}<span>Nothing has been served as far as closet knows: no discipline workbook is set. <a href="#/settings/sheet">Choose one or create a new one</a> and the tours and confinements people have served are read from it.</span></div>` : ""}
+    ${tv.error ? `<div class="banner">${icon("alert")}<span>${esc(tv.error)} <a href="#/settings/sheet">Open Discipline sheet settings</a></span></div>` : ""}
+    ${tv.unmatched?.length ? `<div class="banner info">${icon("info")}<span>${plural(tv.unmatched.length, "name")} in the serving log ${tv.unmatched.length === 1 ? "has" : "have"} no paperwork in closet (${esc(tv.unmatched.slice(0, 4).join(", "))}${tv.unmatched.length > 4 ? ", …" : ""}). They're listed below as not on file; check the spelling in the sheet if one is a typo.</span></div>` : ""}
+    <section class="kpis">
+      <div class="kpi accent"><div class="v">${t.tours.left}</div><div class="l">Tours still to serve (${t.tours.served} of ${t.tours.assigned} served)</div></div>
+      <div class="kpi accent"><div class="v">${t.confinements.left}</div><div class="l">Confinements still to serve (${t.confinements.served} of ${t.confinements.assigned} served)</div></div>
+      <div class="kpi"><div class="v">${tv.balances.filter((p) => p.tours.left || p.confinements.left).length}</div><div class="l">Cadets with a balance</div></div>
+    </section>
+    <div class="toolbar"><label class="search">${icon("search")}<input class="input" id="bq" type="search" placeholder="Find a cadet" value="${esc(S.balQ)}" aria-label="Find a cadet"></label>
+      <select class="select" id="bf" aria-label="Show">${[["owing", "Owing tours or confinements"], ["all", "Everyone"]].map(([v, l]) => `<option value="${v}" ${S.balF === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <span class="spacer"></span><span class="dim">${read}</span></div>
+    <div id="results"></div>`;
+  $("#bq").oninput = (e) => { S.balQ = e.target.value; renderBalanceRows(); };
+  $("#bf").onchange = (e) => { S.balF = e.target.value; renderBalanceRows(); };
+  const pull = $("#tvPull");
+  if (pull) pull.onclick = async () => {
+    const r = await api("/api/tracker/pull", { method: "POST" });
+    if (r.ok) toast(`Read ${plural(r.entries, "serving record")}`); else toast(r.error, true);
+    await load();
+  };
+  renderBalanceRows();
+}
+
+function renderBalanceRows() {
+  const q = S.balQ.trim().toLowerCase();
+  const list = S.tv.balances.filter((p) => (!q || `${p.name} ${p.class_year}`.toLowerCase().includes(q)) && (S.balF === "all" || p.tours.left || p.confinements.left))
+    .sort((a, b) => (b.tours.left + b.confinements.left) - (a.tours.left + a.confinements.left) || a.name.localeCompare(b.name));
+  if (!list.length) {
+    $("#results").innerHTML = `<div class="panel"><div class="empty">${icon("check")}<h3>${S.tv.balances.length ? "Nobody matches" : "No cadets yet"}</h3><p>${S.tv.balances.length ? (S.balF === "owing" && !q ? "No one owes tours or confinements right now." : "Clear the search or show everyone.") : "Cadets appear once their paperwork is in the dump folder."}</p></div></div>`;
+    return;
+  }
+  $("#results").innerHTML = `<div class="table-wrap"><table class="t"><thead><tr><th>Cadet</th><th>Class</th><th class="num" title="Assigned on forms">Tours assigned</th><th class="num">Served</th><th class="num">Left</th><th class="num">Confinements assigned</th><th class="num">Served</th><th class="num">Left</th><th>Status</th></tr></thead><tbody>
+    ${list.map((p) => `<tr><td class="who">${esc(p.name)}</td><td>${esc(p.class_year) || '<span class="dim">—</span>'}</td>
+      <td class="num">${p.tours.assigned}</td><td class="num">${p.tours.served}</td><td class="num">${owe(p.tours)}</td>
+      <td class="num">${p.confinements.assigned}</td><td class="num">${p.confinements.served}</td><td class="num">${owe(p.confinements)}</td>
+      <td>${!p.on_file ? '<span class="chip muted" title="Named in the serving log but no paperwork in closet">Not on file</span>' : p.tours.left || p.confinements.left ? '<span class="chip warn">Outstanding</span>' : p.tours.over || p.confinements.over ? '<span class="chip muted" title="Served more than was assigned">Over-served</span>' : '<span class="chip good">Clear</span>'}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+// ---- Settings → Discipline sheet
+const SERVED_LABELS = { date: "Date served", cadet: "Cadet name", type: "Sanction type", amount: "Amount served", supervisor: "Supervisor", notes: "Notes" };
+
+function settingsSheet() {
+  const tv = S.tv;
+  if (!tv) {
+    refreshTracker().then(() => { if (S.view === "settings" && S.setTab === "sheet" && S.tv) viewSettings(); });
+    return '<p class="dim">Loading…</p>';
+  }
+  const c = S.data.settings.tracker;
+  const sv = c.served;
+  const p = c.push;
+  const txt = (key, val, attrs = "") => `<input class="input" data-tk="${key}" value="${esc(val)}" ${attrs}>`;
+  const sw = (key, on, label) => `<label class="switch"><input type="checkbox" data-tkb="${key}" ${on ? "checked" : ""} aria-label="${esc(label)}"><span class="track"></span><span class="lbl">${on ? "On" : "Off"}</span></label>`;
+  const status = !c.path ? "" : tv.error ? `<span class="chip crit">${esc(tv.error)}</span>`
+    : tv.pulled_at ? `<span class="chip good">Read ${esc(when(tv.pulled_at))}</span> <span class="dim">${plural(tv.entries, "serving record")}${tv.skipped && Object.values(tv.skipped).some(Boolean) ? `, skipped ${esc(Object.entries({ unnamed: "with no name", unknown_type: "that aren't tours or confinements", bad_amount: "with no amount" }).filter(([k]) => tv.skipped[k]).map(([k, l]) => `${tv.skipped[k]} ${l}`).join(", "))}` : ""}</span>` : "";
+  return `
+    <section class="panel"><div class="panel-head"><h2>Discipline workbook</h2><span class="sub">where served tours and confinements are tracked</span></div><div class="panel-body">
+      ${setRow("Excel workbook", "closet reads the serving log in this workbook to learn what each cadet has served, and works out what they still owe. Only completed discipline is read from it: the conduct log is never used to learn about forms. Use File → Download → Microsoft Excel if yours lives in Google Sheets.",
+        `<div class="path">${c.path ? esc(c.path) : '<span class="dim">Not set</span>'}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="tkChoose">${icon("folder")}${c.path ? "Change…" : "Choose…"}</button>${c.path ? '<button class="btn small ghost" type="button" id="tkClear">Clear</button>' : ""}</div>${status ? `<div style="margin-top:8px">${status}</div>` : ""}`)}
+      ${setRow("Create a new workbook", "Writes a blank workbook laid out the way the settings below expect: a conduct log, a serving log (with a Tour / Confinement dropdown) and cadet balances that add themselves up. If no workbook is set yet, the new one is used.",
+        `<button class="btn" type="button" id="tkCreate">${icon("download")}Create new workbook…</button>`)}
+      ${setRow("Keep up to date", "Read the serving log again whenever the file changes (checked every 20 seconds). Reading never changes the workbook.", sw("auto_pull", c.auto_pull, "Read automatically"))}
+      ${c.path ? setRow("Read it now", "Read the serving log right away.", `<button class="btn small" type="button" id="tkPull">${icon("refresh")}Read the sheet</button>`) : ""}
+    </div></section>
+
+    <section class="panel"><div class="panel-head"><h2>Serving log layout</h2><span class="sub">defaults match the CS07 tracker; change them for another layout</span></div><div class="panel-body">
+      ${setRow("Sheet and header row", "The sheet (tab) holding the serving log and the row its column headings are on. If the headings aren't on that row closet looks for them near the top.",
+        `<div class="pair">${txt("served.sheet", sv.sheet, 'aria-label="Sheet name"')}${txt("served.header_row", sv.header_row, 'type="number" min="1" max="1000" aria-label="Header row" style="max-width:90px"')}</div>`)}
+      ${setRow("Column headings", "The heading text of each column, exactly as the sheet spells it (case and punctuation don't matter). Cadet, type and amount are required; leave date, supervisor or notes blank if the sheet has none.",
+        `<div class="stack">${Object.entries(SERVED_LABELS).map(([k, l]) => `<label class="fld" style="width:100%;margin:0"><span>${l}</span>${txt(`served.columns.${k}`, sv.columns[k], `aria-label="${l} heading"`)}</label>`).join("")}</div>`)}
+      ${setRow("Words in the type column", "What the sanction type column says for each kind. A cell that contains the word counts (so “Tour” also catches “tours”).",
+        `<div class="pair">${txt("served.tour_word", sv.tour_word, 'aria-label="Word for tours"')}${txt("served.confinement_word", sv.confinement_word, 'aria-label="Word for confinements"')}</div>`)}
+    </div></section>
+
+    <section class="panel"><div class="panel-head"><h2>Write closet's records into the workbook</h2><span class="sub">replaces what the sheet has now</span></div><div class="panel-body">
+      ${setRow("Allow writing", "Off by default. When on, the <b>Write to workbook</b> button below replaces every row of the conduct log with closet's records (one row per recipient). A copy of the workbook is saved first, the serving log is never touched, and other columns and sheets are left as they are. Close the workbook in Excel before writing.", sw("push.enabled", p.enabled, "Allow writing"))}
+      ${setRow("Sheet and header row", "Where the conduct log is.", `<div class="pair">${txt("push.sheet", p.sheet, 'aria-label="Conduct log sheet"')}${txt("push.header_row", p.header_row, 'type="number" min="1" max="1000" aria-label="Conduct log header row" style="max-width:90px"')}</div>`)}
+      <div class="set-row"><div><h3>Columns</h3><p>Each line is a column in the workbook: its heading, and what closet writes under it. A heading the sheet doesn't have yet is added to the right. Order doesn't matter, columns are found by heading.</p></div><div></div></div>
+      <div class="table-wrap"><table class="t"><thead><tr><th>Heading in the sheet</th><th>What closet writes</th><th></th></tr></thead><tbody>
+        ${p.columns.map((col, i) => `<tr><td><input class="input cell" data-pc="${i}|header" value="${esc(col.header)}" aria-label="Heading ${i + 1}"></td>
+          <td><select class="select" data-pc="${i}|source" aria-label="Source ${i + 1}">${tv.sources.map(([k, l]) => `<option value="${k}" ${col.source === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></td>
+          <td><button class="icon-btn" type="button" data-pcx="${i}" aria-label="Remove column ${i + 1}">${icon("x")}</button></td></tr>`).join("")}
+      </tbody></table></div>
+      <div class="pair" style="margin:10px 0 18px"><button class="btn small" type="button" id="pcAdd">Add a column</button><button class="btn small ghost" type="button" id="pcReset">Back to the defaults</button></div>
+      ${setRow("Fill in cadet names on the balances sheet", "Also writes each cadet's name under a heading on the balances sheet, so its own formulas can add up that cadet's reports and tours. Nothing else on that sheet is written.", sw("push.balances.enabled", p.balances.enabled, "Write cadet names"))}
+      ${p.balances.enabled ? setRow("Balances sheet", "The sheet, its header row, and the heading of the name column.", `<div class="stack"><div class="pair">${txt("push.balances.sheet", p.balances.sheet, 'aria-label="Balances sheet"')}${txt("push.balances.header_row", p.balances.header_row, 'type="number" min="1" max="1000" aria-label="Balances header row" style="max-width:90px"')}</div>${txt("push.balances.header", p.balances.header, 'aria-label="Name column heading"')}</div>`) : ""}
+      ${setRow("Write now", tv.push.last ? `Last written ${esc(when(tv.push.last.at))}: ${plural(tv.push.last.rows, "row")}. The workbook as it was before is saved under metadata/sheet-backups.` : "Nothing has been written yet.",
+        `<button class="btn" type="button" id="tkPush" ${p.enabled && c.path ? "" : "disabled"} title="${p.enabled ? "" : "Turn on “Allow writing” first"}">${icon("upload")}Write to workbook…</button>`)}
+    </div></section>`;
+}
+
+function bindSettingsSheet() {
+  if (!S.tv) return;
+  const click = (sel, fn) => { const el = $(sel); if (el) el.onclick = fn; };
+  const save = async (patch, msg = "Setting saved") => {
+    try {
+      await api("/api/settings", { method: "PUT", body: { tracker: patch } });
+      toast(msg);
+    } catch (e) { toast("Couldn't save: " + e.message, true); }
+    document.activeElement?.blur?.(); // a switch changes what else is shown: redraw now, not on the next click
+    await load();
+  };
+  const nest = (path, v) => path.split(".").reduceRight((acc, k) => ({ [k]: acc }), v);
+  $$("[data-tk]").forEach((el) => (el.onchange = () => save(nest(el.dataset.tk, el.type === "number" ? Number(el.value) : el.value))));
+  $$("[data-tkb]").forEach((el) => (el.onchange = () => save(nest(el.dataset.tkb, el.checked))));
+  const cols = () => S.data.settings.tracker.push.columns.map((c) => ({ ...c }));
+  $$("[data-pc]").forEach((el) => (el.onchange = () => {
+    const [i, k] = el.dataset.pc.split("|");
+    const next = cols();
+    next[Number(i)][k] = el.value;
+    save({ push: { columns: next } });
+  }));
+  $$("[data-pcx]").forEach((b) => (b.onclick = () => { const next = cols(); next.splice(Number(b.dataset.pcx), 1); save({ push: { columns: next } }, "Column removed"); }));
+  click("#pcAdd", () => save({ push: { columns: [...cols(), { header: `Column ${cols().length + 1}`, source: "other" }] } }, "Column added"));
+  click("#pcReset", () => save({ push: { columns: S.tv.defaults.push.columns } }, "Columns reset"));
+  click("#tkChoose", async () => {
+    const r = await closet.chooseSheet();
+    if (r?.ok) { toast(r.pull?.ok ? `Workbook set. Read ${plural(r.pull.entries, "serving record")}.` : "Workbook set"); if (r.pull && !r.pull.ok) toast(r.pull.error, true); await load(); } else if (r?.error) toast(r.error, true);
+  });
+  click("#tkClear", async () => { await save({ path: "" }, "Workbook cleared"); });
+  click("#tkCreate", async () => {
+    const r = await closet.createSheet();
+    if (r?.ok) {
+      toast(r.adopted ? "Workbook created and set as your discipline workbook" : "Workbook created");
+      await load();
+      if (!r.adopted) await ask({ title: "Workbook created", message: `<p>${esc(r.file)}</p><p class="dim">It isn't your discipline workbook yet. Choose it above if you want closet to use it.</p>`, choices: [{ label: "OK", value: true, primary: true }] });
+    } else if (r?.error) toast(r.error, true);
+  });
+  click("#tkPull", async () => {
+    const r = await api("/api/tracker/pull", { method: "POST" });
+    if (r.ok) toast(`Read ${plural(r.entries, "serving record")}`); else toast(r.error, true);
+    await load();
+  });
+  click("#tkPush", async () => {
+    const c = S.data.settings.tracker;
+    const ok = await ask({
+      title: "Replace the conduct log in the workbook?",
+      message: `<p>Every row under the headings of <b>${esc(c.push.sheet)}</b> will be replaced with closet's records, then the sheet's formulas recalculate when it's opened.</p><p class="dim">${esc(c.path)}</p><p>A copy of the workbook as it is now is saved first. Close it in Excel before continuing.</p>`,
+      choices: [{ label: "Cancel", value: null }, { label: "Replace the rows", value: true, primary: true }], danger: true,
+    });
+    if (!ok) return;
+    try {
+      const r = await api("/api/tracker/push", { method: "POST" });
+      toast(`Wrote ${plural(r.rows, "row")} to the workbook`);
+      const added = r.sheets.flatMap((s) => s.added);
+      if (added.length) await ask({ title: "Columns were added", message: `<p>These headings weren't in the sheet, so closet added them on the right: ${esc(added.join(", "))}.</p>`, choices: [{ label: "OK", value: true, primary: true }] });
+    } catch (e) {
+      await ask({ title: "Couldn't write to the workbook", message: `<p>${esc(e.message)}</p>`, choices: [{ label: "OK", value: true, primary: true }] });
+    }
+    await load();
+  });
+}
+
+// ------------------------------------------------------------------ notifications (email)
+// Contacts live in a registry (Settings → Push notifications); the Notifications tab sends each
+// cadet a summary of their own paperwork. Every control that sends is disabled, with the reason
+// shown, until a Gmail account is connected, so nothing here can fail on an unconfigured install.
+const needsNotify = () => S.view === "notifications" || (S.view === "settings" && S.setTab === "notify");
+async function refreshNotify() {
+  if (!needsNotify()) return;
+  try { S.nv = await api("/api/notify"); } catch (e) { toast("Couldn't load notifications: " + e.message, true); }
+}
+
+const stageLabel = (k) => (FLAGS.find(([f]) => f === k) || [])[2] || k;
+const when = (s) => (s ? fmtStamp(s.replace(/Z?$/, "Z")) : "");
+
+function tieChip(c) {
+  if (c.guessed) return '<span class="chip warn" title="The spreadsheet had no name for this address, so one was made from it. Check it.">Name guessed</span>';
+  if (!c.cadet) return '<span class="chip muted" title="Not linked to anyone with paperwork yet">Not linked</span>';
+  if (c.match === "close") return '<span class="chip warn" title="Linked by a similar spelling. Check that this is the right person.">Check match</span>';
+  return c.on_file ? '<span class="chip good">Linked</span>' : '<span class="chip muted" title="No active paperwork under this name yet">No paperwork yet</span>';
+}
+
+// ---- Settings → Push notifications
+
+function settingsNotify() {
+  const nv = S.nv;
+  if (!nv) {
+    refreshNotify().then(() => { if (S.view === "settings" && S.setTab === "notify" && S.nv) viewSettings(); });
+    return '<p class="dim">Loading…</p>';
+  }
+  const m = nv.mail;
+  const optedIn = nv.contacts.filter((c) => c.auto && c.cadet).length;
+  const years = [...new Set(nv.contacts.map((c) => c.class_year).filter(Boolean))].sort();
+  const rep = S.importReport;
+  return `
+    <section class="panel"><div class="panel-head"><h2>Gmail account<button type="button" class="gm-help" id="gmHelp" aria-label="How to set up Gmail sending" title="How to set up Gmail sending">i</button></h2><span class="sub">emails are sent from this address</span></div><div class="panel-body">
+      ${m.configured
+        ? setRow("Connected", `Sending as <b>${esc(m.user)}</b>${m.from_name ? `, shown as “${esc(m.from_name)}”` : ""}. The app password is kept encrypted on this computer only. It is never saved in the metadata folder or in backups.`,
+          `<div class="pair"><button class="btn small" type="button" id="gmailTest">Send test email</button><button class="btn small ghost" type="button" id="gmailOff">Disconnect</button></div>`)
+        : `<div class="banner ${m.secure ? "info" : ""}">${icon(m.secure ? "info" : "alert")}<span>${esc(m.reason)}</span></div>`}
+      ${m.secure || m.configured ? setRow(m.configured ? "Use a different account" : "Connect Gmail",
+        `Turn on 2-Step Verification for the Gmail account, then create an <b>app password</b> (Google Account → Security → 2-Step Verification → App passwords) and paste it here. A normal Gmail password won't work. The sign-in is checked with Google before it's saved.`,
+        `<div class="stack"><input class="input" id="gmUser" type="email" placeholder="you@gmail.com" autocomplete="off" aria-label="Gmail address" value="${esc(m.user || "")}">
+          <input class="input" id="gmPass" type="password" placeholder="App password (16 letters)" autocomplete="new-password" aria-label="App password">
+          <input class="input" id="gmName" placeholder="Name shown to recipients (optional)" autocomplete="off" aria-label="Sender name" value="${esc(m.from_name || "")}">
+          <button class="btn primary small" type="button" id="gmConnect">Check and save</button></div>`) : ""}
+    </div></section>
+
+    <section class="panel"><div class="panel-head"><h2>Contact list</h2><span class="sub">${plural(nv.contacts.length, "email address", "email addresses")}, ${plural(nv.contacts.filter((c) => c.cadet && c.on_file).length, "linked to a cadet with paperwork", "linked to cadets with paperwork")}</span></div><div class="panel-body">
+      <p class="hint">Import a spreadsheet (.xlsx or .csv) with names and emails in any layout. closet finds every email address, takes the name from the cells to its left, and matches it to the nearest recipient name on your forms. “Doe, John A.”, “C2C John Doe” and “John Doe” count as the same person. Check the matches below; anything you correct is kept.</p>
+      <div class="toolbar">
+        <button class="btn" type="button" id="ctImport">${icon("upload")}Import spreadsheet…</button>
+        <button class="btn ghost" type="button" id="ctAddToggle">Add one by hand</button>
+        <span class="spacer"></span>
+        <label class="search">${icon("search")}<input class="input" id="ctQ" type="search" placeholder="Find a name or email" value="${esc(S.cQ)}" aria-label="Find a contact"></label>
+        <select class="select" id="ctFilter" aria-label="Show">${[["all", "Everyone"], ["unlinked", "Not linked to a cadet"], ["check", "Needs a look"], ["in", "Opted in to automatic updates"], ["out", "Not opted in"]].map(([v, l]) => `<option value="${v}" ${S.cFilter === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      </div>
+      ${rep ? `<div class="banner info">${icon("check")}<span>${esc(rep.file)}: found ${plural(rep.found, "address", "addresses")}. Added ${rep.added}${rep.existing ? `, ${rep.existing} already in the list (left as they were)` : ""}. ${rep.tied} linked to a cadet${rep.close ? ` (${rep.close} by a similar spelling, marked “Check match”)` : ""}${rep.untied ? `, ${rep.untied} not linked` : ""}${rep.guessed ? `, ${rep.guessed} with a name guessed from the address` : ""}.</span><button class="icon-btn" type="button" id="ctRepClose" aria-label="Dismiss">${icon("x")}</button></div>` : ""}
+      <div class="addrow" id="ctAdd" hidden>
+        <input class="input" id="ctaName" placeholder="Name" aria-label="Name" autocomplete="off">
+        <input class="input" id="ctaEmail" type="email" placeholder="Email" aria-label="Email" autocomplete="off">
+        <button class="btn primary small" type="button" id="ctaGo">Add</button>
+      </div>
+      <datalist id="cadetList">${nv.cadets.map((n) => `<option value="${esc(n)}">`).join("")}</datalist>
+      <div class="toolbar sel-bar">
+        <select class="select" id="ctSelect" aria-label="Select contacts"><option value="">Select…</option><option value="shown">All shown</option><option value="none">None</option>${years.map((y) => `<option value="y:${esc(y)}">Class of ${esc(y)}</option>`).join("")}<option value="out">Not opted in</option><option value="in">Opted in</option></select>
+        <span class="dim" id="ctSelCount"></span>
+        <span class="spacer"></span>
+        <button class="btn small" type="button" id="ctOptIn">Opt in selected</button>
+        <button class="btn small" type="button" id="ctOptOut">Opt out selected</button>
+        <button class="btn small ghost" type="button" id="ctRemove" style="color:#f0a3a3">Remove selected</button>
+      </div>
+      <div class="table-wrap contacts"><table class="t"><thead><tr><th style="width:34px"></th><th>Name</th><th>Email</th><th>Linked cadet</th><th>Status</th><th class="num">Class</th><th title="Send this person automatic updates">Auto</th><th></th></tr></thead><tbody id="contactRows"></tbody></table></div>
+    </div></section>
+
+    <section class="panel"><div class="panel-head"><h2>Signature</h2><span class="sub">closing lines at the end of every email</span></div><div class="panel-body">
+      ${setRow("Add a signature", "Appears at the very end of manual and automatic emails, after the table.",
+        `<label class="switch"><input type="checkbox" id="sigOn" ${nv.signature.enabled ? "checked" : ""} aria-label="Add a signature"><span class="track"></span><span class="lbl">${nv.signature.enabled ? "On" : "Off"}</span></label>`)}
+      <label class="fld" style="margin:6px 0 0"><span>Signature text</span><textarea class="input" id="sigText" rows="4" maxlength="1000" placeholder="V/r,&#10;First Sergeant, CS-07">${esc(nv.signature.text)}</textarea></label>
+    </div></section>
+
+    <section class="panel"><div class="panel-head"><h2>What the emails say</h2><span class="sub">applies to manual and automatic emails alike</span></div><div class="panel-body">
+      ${(() => {
+        const ct = nv.content;
+        const chk = (k, label, off = false) => `<label class="check"><input class="chk" type="checkbox" data-ct="${k}" ${ct[k] ? "checked" : ""} ${off ? "disabled" : ""}> ${label}</label>`;
+        return setRow("Paperwork table", "A list of the cadet's forms with the columns you pick.", `<div class="stack">${chk("forms", "Include the table")}${[["date", "Date"], ["form", "Form type and positive / negative"], ["reason", "Reason"], ["details", "Reason details"], ["status", "Where it is now"], ["steps", "Step-by-step checklist"], ["outcomes", "Rewards and sanctions"]].map(([k, l]) => chk(k, l, !ct.forms)).join("")}</div>`)
+          + setRow("Which forms are listed", "Totals and balances always count every form.", `<div class="stack">${chk("only_open", "Only forms still waiting on a step", !ct.forms)}${chk("positives", "Include positive forms", !ct.forms)}</div>`)
+          + setRow("Tours and confinements", "How many each cadet still has to serve, from the assigned counts on their forms and what the discipline workbook says they served. See Settings → Discipline sheet.", `<div class="stack">${chk("balances", "Show what's left to serve")}${chk("balance_detail", "Also show served and assigned counts", !ct.balances)}</div>`)
+          + setRow("Extras", "", `<div class="stack">${chk("totals", "Totals line (forms, demerits, tours, confinements)")}${chk("footer", "“Sent by the First Sergeant's paperwork tracker” line")}</div>`);
+      })()}
+    </div></section>
+
+    <section class="panel"><div class="panel-head"><h2>Automatic updates</h2><span class="sub">email someone when one of their forms passes a step</span></div><div class="panel-body">
+      ${setRow("Send automatic updates", `Off by default, for everyone. When on, a person who is opted in (the Auto column above) gets an email as soon as one of their forms passes a step you've ticked below, with the same summary table as a manual notification. Updates go out only while closet is open. Turning this on never announces what has already happened, only what changes from now on.`,
+        `<select class="select" id="autoOn" ${m.configured ? "" : "disabled"} aria-label="Automatic updates">${[["0", "Off"], ["1", "On"]].map(([v, l]) => `<option value="${v}" ${(nv.auto.enabled ? "1" : "0") === v ? "selected" : ""}>${l}</option>`).join("")}</select>${m.configured ? "" : '<div class="hint">Connect a Gmail account first.</div>'}`)}
+      ${setRow("Which steps", "A form passing any ticked step triggers an update.",
+        `<div class="stack">${nv.steps.map(({ key, label }) => `<label class="check"><input class="chk" type="checkbox" data-stage="${key}" ${nv.auto.stages.includes(key) ? "checked" : ""}> ${esc(label)}</label>`).join("")}</div>`)}
+      ${setRow("Who", `${plural(optedIn, "person is", "people are")} opted in right now. Tick contacts in the list above and use <b>Opt in selected</b> or <b>Opt out selected</b>, or choose a class year in the Select menu to opt in a whole class at once.`,
+        `<button class="btn small" type="button" id="optAllLinked">Opt in everyone linked to a cadet</button>`)}
+      ${setRow("A safety limit", `If one change would email more than ${nv.auto_max} people at once (a bulk step, a large sync), nothing is sent and the Notifications tab says why, so a mistake can't flood inboxes.`, "")}
+    </div></section>`;
+}
+
+// Google makes this part manual on purpose, so the app can only explain it.
+function gmailHelp() {
+  return ask({
+    title: "Setting up Gmail sending", wide: true,
+    message: `<p>closet can't do this part for you: Google requires the account owner to create a special password for programs like this one. It takes about two minutes and is done once.</p>
+      <ol>
+        <li>Sign in at <b>myaccount.google.com</b> with the Gmail account you want to send from.</li>
+        <li>Open <b>Security</b> and make sure <b>2-Step Verification</b> is on. App passwords don't exist without it.</li>
+        <li>Search the account page for <b>App passwords</b> (or go to myaccount.google.com/apppasswords).</li>
+        <li>Name it something like “closet” and choose <b>Create</b>. Google shows a 16-letter password once.</li>
+        <li>Paste that password into <b>App password</b> here, with the full Gmail address, and choose <b>Check and save</b>. Spaces don't matter.</li>
+      </ol>
+      <p class="dim">If App passwords isn't offered: a school or work Google account may have it turned off by an administrator, so use a personal Gmail account or ask the administrator. Your normal Gmail password will not work. Gmail allows roughly 500 messages a day. The app password is stored encrypted on this computer and can be revoked any time from the same Google page.</p>`,
+    choices: [{ label: "Got it", value: true, primary: true }],
+  });
+}
+
+function shownContacts() {
+  const q = S.cQ.trim().toLowerCase();
+  return S.nv.contacts.filter((c) => {
+    if (q && !`${c.name} ${c.email} ${c.cadet}`.toLowerCase().includes(q)) return false;
+    if (S.cFilter === "unlinked") return !c.cadet;
+    if (S.cFilter === "check") return c.guessed || c.match === "close" || !c.cadet;
+    if (S.cFilter === "in") return c.auto;
+    if (S.cFilter === "out") return !c.auto;
+    return true;
+  });
+}
+
+function renderContactRows() {
+  const body = $("#contactRows");
+  if (!body) return;
+  const list = shownContacts();
+  [...S.cSel].forEach((id) => { if (!S.nv.contacts.some((c) => c.id === id)) S.cSel.delete(id); });
+  body.innerHTML = list.length ? list.map((c) => `<tr data-cid="${c.id}">
+    <td><input class="chk" type="checkbox" data-csel="${c.id}" ${S.cSel.has(c.id) ? "checked" : ""} aria-label="Select ${esc(c.name || c.email)}"></td>
+    <td><input class="input cell" data-cf="name" value="${esc(c.name)}" placeholder="Name" aria-label="Name" title="${c.sheet_name ? `The spreadsheet said: ${esc(c.sheet_name)}` : ""}"></td>
+    <td><input class="input cell" data-cf="email" type="email" value="${esc(c.email)}" aria-label="Email"></td>
+    <td><input class="input cell" data-cf="cadet" list="cadetList" value="${esc(c.cadet)}" placeholder="Not linked" aria-label="Linked cadet"></td>
+    <td data-status>${tieChip(c)}</td>
+    <td class="num">${esc(c.class_year) || '<span class="dim">—</span>'}</td>
+    <td><input class="chk" type="checkbox" data-cauto ${c.auto ? "checked" : ""} aria-label="Automatic updates for ${esc(c.name || c.email)}"></td>
+    <td><button class="icon-btn" type="button" data-cdel aria-label="Remove ${esc(c.email)}">${icon("x")}</button></td></tr>`).join("")
+    : `<tr><td colspan="8"><div class="empty" style="padding:28px">${icon("search")}<h3>${S.nv.contacts.length ? "No contacts match" : "No contacts yet"}</h3><p>${S.nv.contacts.length ? "Clear the search or change the filter." : "Import a spreadsheet or add an address by hand."}</p></div></td></tr>`;
+  const n = S.cSel.size;
+  $("#ctSelCount").textContent = n ? `${n} selected` : "";
+  ["#ctOptIn", "#ctOptOut", "#ctRemove"].forEach((s) => { $(s).disabled = !n; });
+  $$("[data-csel]", body).forEach((c) => (c.onchange = () => { c.checked ? S.cSel.add(c.dataset.csel) : S.cSel.delete(c.dataset.csel); renderContactRows(); }));
+  $$("[data-cauto]", body).forEach((c) => (c.onchange = async () => {
+    const id = c.closest("tr").dataset.cid;
+    try {
+      await api(`/api/notify/contacts/${id}`, { method: "PATCH", body: { auto: c.checked } });
+      S.nv.contacts.find((x) => x.id === id).auto = c.checked;
+    } catch (e) { c.checked = !c.checked; toast(e.message, true); }
+  }));
+  $$("[data-cf]", body).forEach((inp) => (inp.onchange = async () => {
+    const tr = inp.closest("tr");
+    const id = tr.dataset.cid;
+    const c = S.nv.contacts.find((x) => x.id === id);
+    const field = inp.dataset.cf;
+    try {
+      const saved = await api(`/api/notify/contacts/${id}`, { method: "PATCH", body: { [field]: inp.value } });
+      c.guessed = false;
+      if (field === "cadet" || saved.cadet !== c.cadet) { await refreshNotify(); renderContactRows(); return; } // a corrected name may have found its cadet
+      c[field] = inp.value.trim();
+      if (field === "email") inp.value = c.email.toLowerCase();
+      $("[data-status]", tr).innerHTML = tieChip(c);
+    } catch (e) { inp.value = c[field]; toast(e.message, true); }
+  }));
+  $$("[data-cdel]", body).forEach((b) => (b.onclick = async () => {
+    const c = S.nv.contacts.find((x) => x.id === b.closest("tr").dataset.cid);
+    const ok = await ask({ title: "Remove this contact?", message: `<p>${esc(c.name || c.email)} (${esc(c.email)}) will be removed from the list. Their paperwork is not affected.</p>`, choices: [{ label: "Keep", value: null }, { label: "Remove", value: true, primary: true }], danger: true });
+    if (!ok) return;
+    await api("/api/notify/contacts/bulk", { method: "POST", body: { ids: [c.id], delete: true } });
+    await refreshNotify();
+    renderContactRows();
+  }));
+}
+
+function bindSettingsNotify() {
+  if (!S.nv) return;
+  const nv = S.nv;
+  renderContactRows();
+  const click = (sel, fn) => { const el = $(sel); if (el) el.onclick = fn; };
+  click("#gmHelp", gmailHelp);
+  const saveSig = async (patch) => {
+    try { await api("/api/notify/signature", { method: "PUT", body: patch }); toast("Signature saved"); } catch (e) { toast(e.message, true); }
+    await refreshNotify();
+  };
+  $("#sigOn").onchange = async (e) => { await saveSig({ enabled: e.target.checked }); $("#sigOn").parentElement.querySelector(".lbl").textContent = e.target.checked ? "On" : "Off"; };
+  $("#sigText").onchange = (e) => saveSig({ text: e.target.value });
+  $$("[data-ct]").forEach((el) => (el.onchange = async () => {
+    try { await api("/api/notify/content", { method: "PUT", body: { [el.dataset.ct]: el.checked } }); toast("Email setting saved"); } catch (e) { toast(e.message, true); }
+    document.activeElement?.blur?.();
+    await load();
+  }));
+  click("#gmConnect", async () => {
+    const btn = $("#gmConnect");
+    btn.disabled = true;
+    btn.textContent = "Checking with Google…";
+    const r = await closet.gmailSave({ user: $("#gmUser").value, password: $("#gmPass").value, fromName: $("#gmName").value });
+    if (r?.ok) { toast("Gmail connected"); await load(); } else { toast(r?.error || "Couldn't connect", true); btn.disabled = false; btn.textContent = "Check and save"; }
+  });
+  click("#gmailTest", async () => {
+    const btn = $("#gmailTest");
+    btn.disabled = true;
+    const r = await closet.gmailTest();
+    btn.disabled = false;
+    if (r?.ok) toast(`Test email sent to ${r.to}`); else toast(r?.error || "The test failed", true);
+  });
+  click("#gmailOff", async () => {
+    const ok = await ask({ title: "Disconnect Gmail?", message: "<p>closet forgets the app password and turns automatic updates off. Your contact list stays.</p>", choices: [{ label: "Cancel", value: null }, { label: "Disconnect", value: true, primary: true }], danger: true });
+    if (!ok) return;
+    await closet.gmailClear();
+    toast("Gmail disconnected");
+    await load();
+  });
+  click("#ctImport", async () => {
+    const r = await closet.importContacts();
+    if (r?.ok) { S.importReport = r.report; toast(r.report.added ? `Added ${plural(r.report.added, "contact")}` : "No new addresses found"); await load(); }
+    else if (r?.error) await ask({ title: "Couldn't read that file", message: `<p>${esc(r.error)}</p>`, choices: [{ label: "OK", value: true, primary: true }] });
+  });
+  click("#ctRepClose", () => { S.importReport = null; viewSettings(); });
+  click("#ctAddToggle", () => { const a = $("#ctAdd"); a.hidden = !a.hidden; if (!a.hidden) $("#ctaName").focus(); });
+  click("#ctaGo", async () => {
+    try {
+      await api("/api/notify/contacts", { method: "POST", body: { name: $("#ctaName").value, email: $("#ctaEmail").value } });
+      $("#ctaName").value = ""; $("#ctaEmail").value = "";
+      toast("Contact added");
+      await refreshNotify();
+      renderContactRows();
+    } catch (e) { toast(e.message, true); }
+  });
+  $("#ctaEmail").onkeydown = (e) => { if (e.key === "Enter") $("#ctaGo").click(); };
+  $("#ctQ").oninput = (e) => { S.cQ = e.target.value; renderContactRows(); };
+  $("#ctFilter").onchange = (e) => { S.cFilter = e.target.value; renderContactRows(); };
+  $("#ctSelect").onchange = (e) => {
+    const v = e.target.value;
+    e.target.value = "";
+    if (v === "none") S.cSel.clear();
+    else {
+      for (const c of shownContacts()) {
+        if (v === "shown" || (v === "in" && c.auto) || (v === "out" && !c.auto) || (v.startsWith("y:") && c.class_year === v.slice(2))) S.cSel.add(c.id);
+      }
+    }
+    renderContactRows();
+  };
+  const bulk = async (patch, msg) => {
+    const ids = [...S.cSel];
+    if (!ids.length) return;
+    try {
+      await api("/api/notify/contacts/bulk", { method: "POST", body: { ids, ...patch } });
+      toast(msg(ids.length));
+      await refreshNotify();
+      renderContactRows();
+      load();
+    } catch (e) { toast(e.message, true); }
+  };
+  click("#ctOptIn", () => bulk({ auto: true }, (n) => `${plural(n, "person")} opted in`));
+  click("#ctOptOut", () => bulk({ auto: false }, (n) => `${plural(n, "person")} opted out`));
+  click("#ctRemove", async () => {
+    const n = S.cSel.size;
+    const ok = await ask({ title: `Remove ${plural(n, "contact")}?`, message: "<p>They're removed from the list. Paperwork is not affected.</p>", choices: [{ label: "Keep", value: null }, { label: "Remove", value: true, primary: true }], danger: true });
+    if (ok) { S.cSel.clear(); await bulk({ delete: true }, () => `Removed ${plural(n, "contact")}`); }
+  });
+  click("#optAllLinked", async () => {
+    const ids = nv.contacts.filter((c) => c.cadet && !c.auto).map((c) => c.id);
+    if (!ids.length) { toast("Everyone linked to a cadet is already opted in"); return; }
+    const ok = await ask({ title: `Opt in ${plural(ids.length, "person", "people")}?`, message: "<p>Each will get an email whenever one of their forms passes a step you've ticked (once automatic updates are on).</p>", choices: [{ label: "Cancel", value: null }, { label: "Opt them in", value: true, primary: true }] });
+    if (!ok) return;
+    await api("/api/notify/contacts/bulk", { method: "POST", body: { ids, auto: true } });
+    await refreshNotify();
+    viewSettings();
+  });
+  const auto = $("#autoOn");
+  if (auto) {
+    auto.onchange = async () => {
+      try {
+        await api("/api/notify/auto", { method: "PUT", body: { enabled: auto.value === "1" } });
+        toast(auto.value === "1" ? "Automatic updates are on. Only changes from now on are announced." : "Automatic updates are off");
+      } catch (e) { toast(e.message, true); auto.value = nv.auto.enabled ? "1" : "0"; }
+      await refreshNotify();
+    };
+  }
+  $$("[data-stage]").forEach((c) => (c.onchange = async () => {
+    const stages = $$("[data-stage]").filter((x) => x.checked).map((x) => x.dataset.stage);
+    try { await api("/api/notify/auto", { method: "PUT", body: { stages } }); toast("Saved"); } catch (e) { c.checked = !c.checked; toast(e.message, true); }
+    await refreshNotify();
+  }));
+}
+
+// ---- Notifications tab
+
+function viewNotifications() {
+  const nv = S.nv;
+  if (!nv) {
+    $("#main").innerHTML = head("Notifications") + '<p class="dim">Loading…</p>';
+    refreshNotify().then(() => { if (S.view === "notifications" && S.nv) viewNotifications(); });
+    return;
+  }
+  const years = [...new Set(nv.people.map((p) => p.class_year).filter(Boolean))].sort();
+  const warn = !nv.ready
+    ? `<div class="banner">${icon("alert")}<span>${esc(nv.mail.reason)} Nothing can be sent until then. <a href="#/settings/notify">Open Push notifications settings</a></span></div>`
+    : !nv.contacts.length
+      ? `<div class="banner info">${icon("info")}<span>The contact list is empty, so there's no one to email yet. <a href="#/settings/notify">Import a spreadsheet of names and emails</a> or add addresses by hand.</span></div>` : "";
+  const held = nv.log.find((l) => l.kind === "auto" && !l.ok && /^Held/.test(l.error || ""));
+  $("#main").innerHTML = head("Notifications", "Email each cadet a summary of their own paperwork, or pick a few. Your message comes first, then a table of their forms.") + banners() + warn +
+    (held && nv.log[0] === held ? `<div class="banner">${icon("alert")}<span>${esc(held.error)}</span></div>` : "") + `
+    <section class="panel compose"><div class="panel-head"><h2>Message</h2><span class="sub">added under it automatically: every active form, where it is in processing, and its rewards or sanctions</span></div><div class="panel-body">
+      <label class="fld"><span>Subject</span><input class="input" id="nSubject" value="${esc(S.nSubject)}" maxlength="150" autocomplete="off"></label>
+      <label class="fld"><span>Your message</span><textarea class="input" id="nMessage" rows="5" placeholder="Hi {first_name}, here's where your paperwork stands…">${esc(S.nMessage)}</textarea></label>
+      <p class="hint">Type <code>{first_name}</code> or <code>{name}</code> and closet fills in each person's own. Plain text only.</p>
+    </div></section>
+    <div class="toolbar">
+      <label class="search">${icon("search")}<input class="input" id="nQ" type="search" placeholder="Find a cadet" value="${esc(S.nQ)}" aria-label="Find a cadet"></label>
+      <select class="select" id="nClass" aria-label="Class year"><option value="all">All classes</option>${years.map((y) => `<option value="${esc(y)}" ${S.nClass === y ? "selected" : ""}>Class of ${esc(y)}</option>`).join("")}</select>
+      <select class="select" id="nFilter" aria-label="Show">${[["all", "Everyone with paperwork"], ["email", "Has an email on file"], ["noemail", "No email on file"], ["open", "Has a form waiting on a step"]].map(([v, l]) => `<option value="${v}" ${S.nFilter === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <span class="spacer"></span>
+      <button class="btn ghost small" type="button" id="nAll">Select all shown</button><button class="btn ghost small" type="button" id="nNone">Clear selection</button>
+    </div>
+    <div id="nTable"></div>
+    <div class="copybar" id="nBar"></div>
+    <section class="panel" style="margin-top:22px"><div class="panel-head"><h2>Recent activity</h2><span class="sub">what was sent, and anything that wasn't</span></div><div class="panel-body" id="nLog"></div></section>`;
+  $("#nSubject").oninput = (e) => { S.nSubject = e.target.value; };
+  $("#nMessage").oninput = (e) => { S.nMessage = e.target.value; };
+  $("#nQ").oninput = (e) => { S.nQ = e.target.value; renderPeople(); };
+  $("#nClass").onchange = (e) => { S.nClass = e.target.value; renderPeople(); };
+  $("#nFilter").onchange = (e) => { S.nFilter = e.target.value; renderPeople(); };
+  $("#nAll").onclick = () => { shownPeople().filter((p) => p.emails.length).forEach((p) => S.nSel.add(p.key)); renderPeople(); };
+  $("#nNone").onclick = () => { S.nSel.clear(); renderPeople(); };
+  renderPeople();
+  renderLog();
+}
+
+function shownPeople() {
+  const q = S.nQ.trim().toLowerCase();
+  return S.nv.people.filter((p) => {
+    if (q && !p.name.toLowerCase().includes(q)) return false;
+    if (S.nClass !== "all" && p.class_year !== S.nClass) return false;
+    if (S.nFilter === "email") return p.emails.length > 0;
+    if (S.nFilter === "noemail") return p.emails.length === 0;
+    if (S.nFilter === "open") return p.open > 0;
+    return true;
+  });
+}
+
+function renderPeople() {
+  const nv = S.nv;
+  const list = shownPeople();
+  const have = new Set(nv.people.filter((p) => p.emails.length).map((p) => p.key));
+  [...S.nSel].forEach((k) => { if (!have.has(k)) S.nSel.delete(k); });
+  if (!nv.people.length) {
+    $("#nTable").innerHTML = `<div class="panel"><div class="empty">${icon("cadets")}<h3>No paperwork yet</h3><p>Cadets appear here once they have active paperwork on file.</p></div></div>`;
+  } else if (!list.length) {
+    $("#nTable").innerHTML = `<div class="panel"><div class="empty">${icon("search")}<h3>No one matches</h3><p>Clear the search or change the filters.</p></div></div>`;
+  } else {
+    $("#nTable").innerHTML = `<div class="table-wrap"><table class="t"><thead><tr><th style="width:34px"></th><th>Cadet</th><th>Class</th><th class="num">Forms</th><th class="num">Waiting</th><th>Email</th><th></th></tr></thead><tbody>
+      ${list.map((p) => `<tr class="${S.nSel.has(p.key) ? "sel" : ""}">
+        <td><input class="chk" type="checkbox" data-nsel="${esc(p.key)}" ${S.nSel.has(p.key) ? "checked" : ""} ${p.emails.length ? "" : "disabled"} aria-label="Send to ${esc(p.name)}"></td>
+        <td class="who">${esc(p.name)}</td><td>${esc(p.class_year) || '<span class="dim">—</span>'}</td>
+        <td class="num">${p.forms}</td><td class="num">${p.open || '<span class="dim">0</span>'}</td>
+        <td>${p.emails.length ? `<span class="sub" style="max-width:34ch">${esc(p.emails.join(", "))}</span>` : '<span class="chip muted" title="Add this person in Settings → Push notifications">No email on file</span>'}</td>
+        <td class="nowrap" style="text-align:right"><button class="icon-btn" type="button" data-npreview="${esc(p.key)}" ${p.emails.length ? "" : "disabled"} title="Preview this person's email" aria-label="Preview email for ${esc(p.name)}">${icon("search")}</button></td></tr>`).join("")}
+      </tbody></table></div>`;
+  }
+  $$("[data-nsel]").forEach((c) => (c.onchange = () => { c.checked ? S.nSel.add(c.dataset.nsel) : S.nSel.delete(c.dataset.nsel); renderPeople(); }));
+  $$("[data-npreview]").forEach((b) => (b.onclick = () => previewEmail(b.dataset.npreview)));
+  const n = S.nSel.size;
+  const can = nv.ready && n > 0 && !S.sending;
+  $("#nBar").innerHTML = `<span class="txt"><b>${plural(n, "person", "people")}</b> selected${nv.ready ? "" : `<br><span style="color:#f0a3a3;font-size:12.5px">${esc(nv.mail.reason)}</span>`}</span>
+    <button class="btn" type="button" id="nTest" ${can ? "" : "disabled"} title="Sends the first selected person's email to your own Gmail address instead of theirs">Send a test to me</button>
+    <button class="btn primary" type="button" id="nSend" ${can ? "" : "disabled"}>${S.sending ? "Sending…" : `Send to ${plural(n, "person", "people")}`}</button>`;
+  $("#nTest").onclick = () => sendEmails(true);
+  $("#nSend").onclick = () => sendEmails(false);
+}
+
+function renderLog() {
+  const el = $("#nLog");
+  const log = S.nv.log.filter((l) => l.kind !== "import").slice(0, 12);
+  el.innerHTML = log.length ? `<table class="t"><thead><tr><th>When</th><th>Kind</th><th>To</th><th>Subject</th><th>Result</th></tr></thead><tbody>${log.map((l) => `<tr>
+    <td class="nowrap">${esc(when(l.at))}</td><td>${esc({ manual: "Manual", auto: "Automatic", test: "Test" }[l.kind] || l.kind)}</td>
+    <td>${esc(l.person || "")}<div class="sub">${esc((l.to || []).join(", "))}</div></td><td><div class="sub" style="color:var(--text-2)">${esc(l.subject || "")}</div></td>
+    <td>${l.ok ? '<span class="chip good">Sent</span>' : `<span class="chip crit" title="${esc(l.error || "")}">Not sent</span><div class="sub" style="white-space:normal">${esc(l.error || "")}</div>`}</td></tr>`).join("")}</tbody></table>`
+    : '<p class="dim" style="margin:0">Nothing has been sent yet.</p>';
+}
+
+async function previewEmail(key) {
+  try {
+    const pv = await api("/api/notify/preview", { method: "POST", body: { key, subject: S.nSubject, message: S.nMessage } });
+    await ask({
+      title: "Preview", wide: true,
+      message: `<p class="dim">To ${esc(pv.to.join(", ")) || "(no email on file)"}<br>Subject: ${esc(pv.subject)}</p><div class="mail-preview">${pv.html}</div>`,
+      choices: [{ label: "Close", value: true, primary: true }],
+    });
+  } catch (e) { toast(e.message, true); }
+}
+
+async function sendEmails(test) {
+  const nv = S.nv;
+  if (S.sending) return;
+  if (!nv.ready) { toast(nv.mail.reason, true); return; }
+  const keys = [...S.nSel];
+  if (!keys.length) return;
+  if (!test) {
+    const names = keys.map((k) => nv.people.find((p) => p.key === k)?.name).filter(Boolean);
+    const ok = await ask({
+      title: `Email ${plural(keys.length, "person", "people")}?`,
+      message: `<p>Each person gets their own email from <b>${esc(nv.mail.user)}</b> with your message and a table of their paperwork, discipline details included.</p>
+        <p class="dim">${esc(names.slice(0, 8).join(", "))}${names.length > 8 ? `, and ${names.length - 8} more` : ""}</p>${keys.length > nv.max_batch ? `<p>That is more than ${nv.max_batch}, the most closet sends at once.</p>` : ""}`,
+      choices: [{ label: "Cancel", value: null }, { label: "Send", value: true, primary: true }],
+    });
+    if (!ok) return;
+  }
+  S.sending = true;
+  renderPeople();
+  try {
+    const r = await api("/api/notify/send", { method: "POST", body: { keys: test ? keys.slice(0, 1) : keys, subject: S.nSubject, message: S.nMessage, test } });
+    if (test) toast(r.sent ? `Test sent to ${nv.mail.user}` : "The test wasn't sent", !r.sent);
+    else toast(r.sent ? `Sent ${plural(r.sent, "email")}${r.failed.length ? `, ${r.failed.length} failed` : ""}` : "Nothing was sent", !r.sent);
+    if (r.failed.length || r.skipped.length || r.aborted) {
+      await ask({
+        title: "Some emails weren't sent",
+        message: `${r.failed.length ? `<p><b>Failed</b></p><ul>${r.failed.map((f) => `<li>${esc(f.name)}: ${esc(f.error)}</li>`).join("")}</ul>` : ""}${r.skipped.length ? `<p><b>Skipped</b></p><ul>${r.skipped.map((f) => `<li>${esc(f.name)}: ${esc(f.reason)}</li>`).join("")}</ul>` : ""}${r.aborted ? "<p>Sending stopped early because every remaining email would have failed the same way.</p>" : ""}`,
+        choices: [{ label: "OK", value: true, primary: true }],
+      });
+    }
+    if (!test && !r.failed.length) S.nSel.clear();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    S.sending = false;
+    await refreshNotify();
+    if (S.view === "notifications") { renderPeople(); renderLog(); }
+  }
+}
+
+// ---- linking a new cadet to a contact that's already in the list
+// Asked once per cadet (the answer is saved); "Decide later" only skips it until the app restarts.
+let tiesBusy = false;
+const tiesSkipped = new Set();
+async function checkContactTies() {
+  if (tiesBusy || document.visibilityState !== "visible" || modalOpen()) return;
+  const ties = (S.data?.notify?.ties || []).filter((t) => !tiesSkipped.has(t.key));
+  if (!ties.length) return;
+  tiesBusy = true;
+  let changed = false;
+  try {
+    const t = ties[0];
+    const one = t.candidates.length === 1;
+    const c0 = t.candidates[0];
+    const ans = await ask({
+      title: "Is this their email?",
+      message: `<p><b>${esc(t.cadet)}</b>${t.class_year ? ` (${esc(t.class_year)})` : ""} has paperwork on file and isn't linked to an email address yet.</p>
+        <p>${one ? `The contact list has <b>${esc(c0.name)}</b> &lt;${esc(c0.email)}&gt;. Is that the same person?` : "These contacts have a similar name. Pick the one that is the same person."}</p>`,
+      select: one ? null : { options: t.candidates.map((c) => [c.id, `${c.name} <${c.email}>`]), value: c0.id },
+      choices: [{ label: "Decide later", value: null }, { label: "Different person", value: "no" }, { label: "Yes, link them", value: one ? c0.id : true, primary: true }],
+    });
+    if (ans === null) tiesSkipped.add(t.key);
+    else if (ans === "no") {
+      for (const c of t.candidates) await api("/api/notify/tie", { method: "POST", body: { id: c.id, cadet: t.cadet, yes: false } });
+      changed = true;
+    } else {
+      await api("/api/notify/tie", { method: "POST", body: { id: ans, cadet: t.cadet, yes: true } });
+      toast(`${t.cadet} is linked to ${t.candidates.find((c) => c.id === ans)?.email}`);
+      changed = true;
+    }
+  } catch (e) {
+    toast("Couldn't save that: " + e.message, true);
+  } finally {
+    tiesBusy = false;
+  }
+  if (changed) await load();
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkContactTies(); });
 
 // ------------------------------------------------------------------ backup and restore
 const fmtBytes = (n) => (n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);

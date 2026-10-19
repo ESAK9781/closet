@@ -78,7 +78,7 @@ test("SQ/CCF button: asks for initials once, writes them and today's date into t
 });
 
 test("Cadet CC button: remembered initials are offered, dated, flag set", async () => {
-  await go("settings");
+  await go("settings/routing");
   assert.equal(await page.inputValue('[data-set="bulk_initials.sqccf_processed"]'), "ejs", "shown in Settings");
   await page.fill('[data-set="bulk_initials.cadet_cc_initialed"]', "RTH");
   await page.press('[data-set="bulk_initials.cadet_cc_initialed"]', "Tab");
@@ -100,7 +100,7 @@ test("Cadet CC button: remembered initials are offered, dated, flag set", async 
 });
 
 test("the date setting: off means initials only", async () => {
-  await go("settings");
+  await go("settings/routing");
   await page.selectOption('[data-set="first_shirt_fill_date"]', "0");
   await page.waitForTimeout(400);
   assert.equal((await state()).settings.first_shirt_fill_date, false);

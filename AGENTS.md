@@ -22,6 +22,10 @@ dump folder are never moved, and only changed by the few explicit actions listed
 | `src/core/sync.js` | Sync mode: pull / match / clear / push over per-step folders; the ledger that guarantees only closet's own files are ever deleted |
 | `src/core/backup.js` | Backup/restore as a hand-written zip: verify first, safety backup, rollback on failure; paths are validated so a backup can only write into the dump/metadata folders |
 | `src/core/signable.js` | PDF structure checks ("can Adobe sign here?") and edits as incremental updates: `addField`, `fillSlots`, `approveAoc` |
+| `src/core/notify.js` | Email: the contact registry (`metadata/notify.json`), the per-cadet summary email, sending, and automatic stage updates. Talks to Gmail only through the `mailer` the Store is given |
+| `src/core/people.js`, `contacts.js` | Name-format matching ("Last, First M", rank, order, typos within two letters); reading a contact spreadsheet (csv/tsv/xlsx via `backup.js`'s zip reader) into name/email pairs |
+| `src/core/tracker.js`, `xlsx.js` | Served tours/confinements and balances: reads the serving log of the discipline workbook, optionally overwrites its conduct log, builds a blank workbook. Every sheet name, row and heading is a setting (`settings.tracker`). `xlsx.js` edits a workbook in place (other parts of the zip are kept byte for byte) with no spreadsheet dependency |
+| `src/main/mailer.js` | Gmail via nodemailer; the app password is encrypted with `safeStorage` in userData `config.json`, never in metadata or backups |
 | `src/core/records.js` | Pure functions turning raw slot values + overrides into tracker records and sheet rows |
 | `src/core/templates.js` | The *meaning* of each template field (semantic key, label, section) and the routing-flag definitions |
 | `src/core/pool.js`, `worker.js`, `extract.js`, `imaging.js`, `assignment.js` | The pdf.js-based parser: template matching, field extraction, worker-thread pool |
@@ -87,13 +91,25 @@ instead of the renderer polling; `load()` in `app.js` re-fetches the whole snaps
   embedded pdf-lib font that is never saved is a dangling reference.
 - The dump folder is edited by exactly three things: Upload/sync replacing a form, the bulk step
   buttons, and the AOC/AMT stamp. The last two copy the original to `metadata/backups` first.
-- Sync **never deletes a file it didn't create.** Send folders are cleared only of ledger entries
+- Sync **never deletes a file it didn't create**, with one exception: a New-paperwork (intake) file that was added as a new form is removed from the intake folder, and only if its hash still matches what was pulled. Send folders are cleared only of ledger entries
   whose hash still matches; everything else is reported. Keep it that way: `test/sync.test.mjs`
   asserts it.
 - Steps with a bulk action are in `templates.BULK_STEPS`; the AOC/AMT approval is deliberately not
   one of them (single form only).
 - Worker jobs (`analyze`, `inspect`, `addField`, `fillSlots`, `approveAoc`) go through
   `pool.run()`; PDF work must stay off the main process.
+
+## Discipline workbook
+
+- Reading is free; **writing is opt-in** (`tracker.push.enabled`) and always saves a copy to `metadata/sheet-backups` first. Pushing only touches the columns it is told to (found by heading), never the serving log, and refuses when the header row doesn't look right rather than guessing.
+- The user's real tracker contains names: tests build workbooks with `createTemplate`/`patchWorkbook`; never commit a real one.
+- Balance = assigned (from forms) - served (from the sheet), floored at 0, per name key. Email content (`notify.content`) is plain on/off switches; keep `compose()` honoring them.
+
+## Email
+
+- Every send path goes through `Notifier.ready()`; with no account the answer is a sentence, not an exception. Keep it that way, and keep automatic sends from ever throwing into the store.
+- Credentials must never enter `metadata/` (backups and sync would carry them). Tests use a fake mailer or `CLOSET_MAIL_OUTBOX` (writes messages to a folder); never send real mail from a test.
+- Automatic updates compare each form's routing flags with `notify.json`'s `seen` baseline; enabling, a new form, a parser bump and a reset all re-baseline silently so nothing old is announced.
 
 ## Privacy and git
 

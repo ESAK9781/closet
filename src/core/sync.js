@@ -5,7 +5,8 @@
 //          paperwork into the intake folder). Only files added since the last sync are picked up.
 //          Each is read and matched to the form it came from, by content and by filename; the
 //          person confirms the matches (or sends one to Review for a side-by-side look), and a
-//          confirmed copy replaces the form's PDF exactly like "Upload updated copy".
+//          confirmed copy replaces the form's PDF exactly like "Upload updated copy". New paperwork
+//          is never matched to an existing form; once added it is deleted from the intake folder.
 //   clear  Each "send" folder is emptied of the copies closet put there last time. Only those:
 //          the ledger records every file closet writes, with its hash, and anything else -- a file
 //          someone added, or one of ours that was changed since (signed in place?) -- is left
@@ -285,6 +286,7 @@ export class Sync {
   }
 
   candidates(item) {
+    if (item.kind === "new") return []; // new paperwork is always its own form, never matched to one closet has
     const a = item.analysis || {};
     const mine = nameKey(item.filename);
     const out = [];
@@ -346,7 +348,9 @@ export class Sync {
             this.store.replaceFile(d.id, p.staged, `Replaced by sync with ${p.filename} from the ${folderName(p.key, "pull")}`);
             out.replaced.push(d.id);
           } else if (d.action === "new") {
-            out.added.push(...this.store.addFiles([p.staged]));
+            const added = this.store.addFiles([p.staged]);
+            out.added.push(...added);
+            if (added.length && p.kind === "new") this.removeIntake(p, out);
           } else if (d.action === "ignore") {
             out.ignored++;
           } else {
@@ -361,6 +365,15 @@ export class Sync {
       this.store.bump();
       return out;
     });
+  }
+
+  /** The one file closet deletes that it didn't create: an intake copy it has added, and only if unchanged since. */
+  removeIntake(p, out) {
+    try {
+      if (fs.statSync(p.src).size === p.size && sha1File(p.src) === p.sha1) fs.rmSync(p.src);
+    } catch (e) {
+      if (e.code !== "ENOENT") out.errors.push(`${p.filename} was added, but couldn't be removed from the ${folderName(p.key, "pull")}: ${e.code || e.message}`);
+    }
   }
 
   finish(p) {

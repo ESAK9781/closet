@@ -551,3 +551,52 @@ button, a, input, select, textarea, label { -webkit-app-region: no-drag; }
 .fchip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px; border: 1px solid var(--brass); border-radius: 999px; background: var(--brass-wash); color: var(--brass-2); font-size: 12.5px; cursor: pointer; }
 .fchip svg { width: 12px; height: 12px; }
 @media (max-width: 900px) { .filter-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ------------------------------------------------------------------ settings sub-tabs */
+html { scroll-padding-top: 90px; }
+.set-tabs { position: sticky; top: 0; z-index: 20; display: flex; gap: 2px; flex-wrap: wrap; margin: -8px 0 18px; padding: 8px 0 0; background: var(--bg); border-bottom: 1px solid var(--line); }
+body.desktop .set-tabs { top: 38px; }
+.set-tabs a { padding: 9px 14px 10px; color: var(--muted); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 6px 6px 0 0; transition: color .15s, background .15s; }
+.set-tabs a:hover { color: var(--text); background: var(--panel); }
+.set-tabs a[aria-current="page"] { color: var(--text); border-bottom-color: var(--brass); }
+.settings.wide { grid-template-columns: minmax(0, 1100px); }
+.stack { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.stack .input { width: 100%; }
+.hint { margin: 6px 0 12px; color: var(--muted); font-size: 12.5px; max-width: 80ch; }
+code { background: var(--raised); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.check { display: flex; align-items: center; gap: 9px; color: var(--text-2); }
+.addrow { display: flex; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; }
+.addrow[hidden] { display: none; }
+.addrow .input { flex: 1 1 200px; }
+.sel-bar { margin-bottom: 8px; }
+.gm-help { display: inline-grid; place-items: center; width: 20px; height: 20px; margin-left: 8px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--raised); color: var(--brass-2); font: 700 12px/1 var(--font); cursor: pointer; vertical-align: middle; }
+.gm-help:hover { border-color: var(--brass); }
+.modal-msg ol { margin: 6px 0 0; padding-left: 20px; } .modal-msg li { margin: 6px 0; }
+.input.cell { padding: 5px 8px; font-size: 13px; min-width: 130px; background: transparent; border-color: transparent; }
+.input.cell:hover, .input.cell:focus { background: var(--bg); border-color: var(--line); }
+.banner .icon-btn { margin-left: auto; }
+
+/* ------------------------------------------------------------------ notifications */
+.compose { margin-bottom: 18px; }
+.fld { display: block; margin-bottom: 12px; }
+.fld > span { display: block; margin-bottom: 5px; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.fld .input { width: 100%; }
+textarea.input { resize: vertical; min-height: 96px; line-height: 1.5; }
+.modal-extra { display: block; margin-top: 12px; }
+.modal-extra span { display: block; margin-bottom: 5px; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.modal-extra .select { width: 100%; }
+.mail-preview { background: #fff; color: #1d2330; border-radius: 10px; padding: 18px 20px; margin-top: 8px; overflow: auto; }
+.mail-preview a { color: #2a5db0; }
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; color: var(--text-2); }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .track { width: 38px; height: 22px; border-radius: 22px; background: var(--raised-2); border: 1px solid var(--line); position: relative; transition: background .15s; }
+.switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-2); transition: transform .15s, background .15s; }
+.switch input:checked + .track { background: var(--brass); border-color: var(--brass); }
+.switch input:checked + .track::after { transform: translateX(16px); background: var(--brass-ink); }
+.switch input:focus-visible + .track { outline: 2px solid var(--brass); outline-offset: 2px; }
+.toolbar > .select { width: auto; min-width: 180px; }
+.set-tabs { box-shadow: 0 14px 14px -12px rgba(0, 0, 0, .7); }
+.sel-bar .dim { white-space: nowrap; }
+body.desktop .set-tabs::before { content: ""; position: absolute; left: -38px; right: -38px; top: -38px; height: 38px; background: var(--bg); }
+
+.owe { color: var(--crit); }

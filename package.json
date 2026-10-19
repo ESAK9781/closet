@@ -29,6 +29,7 @@
     "@fontsource-variable/archivo": "^5.2.5",
     "@napi-rs/canvas": "^1.0.9",
     "electron-updater": "^6.8.9",
+    "nodemailer": "^7.0.13",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289"
   },
