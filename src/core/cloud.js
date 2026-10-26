@@ -16,7 +16,7 @@ const CLOUD_ONLY = OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS;
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 export function inOneDrive(p) {
-  if (process.platform !== "win32" || !p) return false;
+  if (!p || !probe.supported()) return false;
   const full = path.resolve(p).toLowerCase();
   const roots = [process.env.OneDrive, process.env.OneDriveCommercial, process.env.OneDriveConsumer].filter(Boolean).map((r) => path.resolve(r).toLowerCase());
   return roots.some((r) => full === r || full.startsWith(r + path.sep)) || /[\\/]onedrive[^\\/]*[\\/]/i.test(full);
@@ -24,6 +24,7 @@ export function inOneDrive(p) {
 
 // Swappable so tests can pretend a file is a placeholder.
 export const probe = {
+  supported: () => process.platform === "win32", // placeholders are a Windows file attribute
   attributes(p) {
     try {
       const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[int](Get-Item -LiteralPath $env:CLOSET_P -Force).Attributes"],

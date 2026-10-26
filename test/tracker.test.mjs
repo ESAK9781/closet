@@ -276,6 +276,7 @@ test("OneDrive placeholders are downloaded before reading, and a stuck one is ex
   const real = { ...probe };
   try {
     let hydrated = false;
+    probe.supported = () => true; // placeholders only exist on Windows; pretend, so this runs everywhere
     probe.attributes = () => (hydrated ? 0x20 : 0x400000 | 0x20); // RECALL_ON_DATA_ACCESS until its content has been read
     probe.read = () => { hydrated = true; };
     assert.equal(ensureLocal(file), true, "had to be downloaded");
@@ -301,6 +302,7 @@ test("a placeholder workbook is hydrated before the serving log is read", () => 
   const seen = [];
   try {
     let hydrated = false;
+    probe.supported = () => true;
     probe.attributes = () => (hydrated ? 0 : 0x400000);
     probe.read = (p) => { seen.push(path.basename(p)); hydrated = true; };
     store.updateSettings({ tracker: { path: file } });
