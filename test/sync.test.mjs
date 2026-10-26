@@ -154,7 +154,9 @@ test("pull: a signed copy is matched by name and content; an unrelated one is of
   const by = (n) => r.items.find((i) => i.filename === n);
   const signed = by("John Doe_Neg_F10_Uniform Violation - signed.pdf");
   assert.equal(signed.suggestion.action, "replace");
-  assert.equal(signed.suggestion.review, false, "name + content agree: no review needed");
+  assert.equal(signed.warnings[0]?.code, "unsigned", "the copy from the recipient folder has no recipient signature");
+  assert.match(signed.warnings[0].text, /wasn't found in/);
+  assert.equal(signed.suggestion.review, true, "name + content agree, but it is held for a look because the signature is missing");
   assert.equal(signed.candidates[0].filename, "John Doe_Neg_F10_Uniform Violation.pdf");
   assert.ok(signed.candidates[0].why.length);
   const mys = by("scan 0001.pdf");
@@ -261,4 +263,19 @@ test("quick dump is unchanged apart from the packet being off by default", async
   const r2 = await store.quickDump(dir("quick out"));
   assert.ok(r2.packetForms >= 0);
   store.updateSettings({ print_packet: false });
+});
+
+test("a copy from a signed folder without that signature is flagged, whatever else matches", () => {
+  const item = (o) => ({ kind: "returned", key: "recipient_signed", filename: "x.pdf", analysis: { form_type: "F10", slots: {} }, ...o });
+  const sync = store.sync;
+  assert.equal(sync.checkSigned(item({}))[0].code, "unsigned");
+  assert.deepEqual(sync.checkSigned(item({ analysis: { form_type: "F10", slots: { sig_recipient: { filled: true } } } })), []);
+  assert.deepEqual(sync.checkSigned(item({ analysis: { form_type: "F10", slots: { sig_recipient: { value: "Jon Doe" } } } })), []);
+  assert.equal(sync.checkSigned(item({ analysis: { form_type: "F10", slots: { sig_recipient: { value: "False" } } } }))[0].code, "unsigned");
+  assert.equal(sync.checkSigned(item({ analysis: { error: "Could not read PDF" } }))[0].code, "unreadable");
+  assert.deepEqual(sync.checkSigned(item({ kind: "new", key: "intake" })), [], "new paperwork isn't expected to be signed");
+  assert.deepEqual(sync.checkSigned(item({ key: "sqccf_processed", analysis: { form_type: "F174", slots: {} } })), [], "a step the form doesn't have isn't checked");
+  const sug = sync.suggest({ warnings: [{ code: "unsigned" }], candidates: [{ id: "a", score: 0.95 }] });
+  assert.deepEqual(sug, { action: "replace", id: "a", review: true });
+  assert.equal(sync.suggest({ warnings: [], candidates: [{ id: "a", score: 0.95 }] }).review, false);
 });

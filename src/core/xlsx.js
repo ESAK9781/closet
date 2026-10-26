@@ -116,30 +116,46 @@ export function readWorkbook(file) {
 
 /**
  * Overwrite whole columns of one or more sheets. Each edit:
- *   { sheet, headerRow, columns: [{ header, values }] }
+ *   { sheet, headerRow, columns: [{ header, values }], minRows? }
  * A column is found by its heading in the header row (appended to the right when it isn't there).
- * `values` replace everything under the heading; cells in other columns are left alone. Values are
- * a string, a number, a { date: serial }, or null. Styles come from the first data row so the sheet
- * keeps its look. Returns [{ sheet, rows, added }].
+ * `values` replace everything under the heading; cells in other columns are left alone. A value is
+ * a string, a number, { date: serial }, { f: formula, v?: cached result } or null. `values` may be
+ * a function of `letter(sheet, header)` (the column letter that heading ended up in), so a formula
+ * can point at another sheet's column. Styles come from the first data row so the sheet keeps its
+ * look. Returns [{ sheet, rows, added }].
  */
 export function patchWorkbook(file, edits, { out = file } = {}) {
   const wb = open(file);
   const files = new Map();
-  const report = [];
   try {
     for (const n of wb.names) files.set(n, wb.zip.read(wb.byName.get(n)));
   } finally {
     wb.zip.close();
   }
   const text = (n) => (files.has(n) ? files.get(n).toString("utf8") : null);
-  const wbView = { get: text };
-  const sheets = sheetList(wbView);
+  const sheets = sheetList({ get: text });
 
-  for (const edit of edits) {
+  // pass 1: find every column (so formulas can name columns of other sheets)
+  const plans = edits.map((edit) => {
     const sh = sheets.find((s) => s.name.toLowerCase() === String(edit.sheet).toLowerCase());
     if (!sh) throw new Error(`The workbook has no sheet called “${edit.sheet}” (it has ${sheets.map((s) => `“${s.name}”`).join(", ")}). Change the sheet name in Settings or add the sheet.`);
-    report.push(patchSheet(files, text, sh, edit));
-  }
+    const st = loadSheet(text, sh);
+    return { edit, sh, st, cols: resolveColumns(st, edit) };
+  });
+  const letter = (sheet, header) => {
+    const p = plans.find((x) => x.sh.name.toLowerCase() === String(sheet).toLowerCase());
+    const c = p?.cols.find((x) => normHeader(x.header) === normHeader(header));
+    return c && c.col !== undefined ? colLetter(c.col) : null;
+  };
+
+  // pass 2: write the cells
+  const report = plans.filter((p) => !p.edit.lookup).map((p) => {
+    const columns = p.cols.map((c) => ({ ...c, values: typeof c.values === "function" ? c.values(letter) : c.values }));
+    const n = applyColumns(p.st, p.edit, columns);
+    files.set(p.sh.path, Buffer.from(serializeSheet(p.st)));
+    growTables(files, text, p.sh, p.edit.headerRow, n);
+    return { sheet: p.sh.name, rows: n, added: p.cols.filter((c) => c.added).map((c) => c.header) };
+  });
 
   // cached results and the calculation chain are stale after an edit: have Excel rebuild them
   files.delete("xl/calcChain.xml");
@@ -174,7 +190,7 @@ function replaceFile(tmp, dest) {
     } catch (e) {
       if (attempt >= 4 || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) {
         fs.rmSync(tmp, { force: true });
-        if (["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw new Error("The workbook is open in another program (Excel?) or is read-only. Close it and try again. Nothing was changed.");
+        if (["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw new Error("The workbook is open in another program (Excel?), is being synced by OneDrive, or is read-only. Close it, let OneDrive finish, and try again. Nothing was changed.");
         throw e;
       }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
@@ -182,7 +198,8 @@ function replaceFile(tmp, dest) {
   }
 }
 
-function patchSheet(files, text, sh, edit) {
+/** One sheet's XML, taken apart into rows of cells. */
+function loadSheet(text, sh) {
   const src = text(sh.path);
   if (src === null) throw new Error(`Couldn't read the sheet “${sh.name}”`);
   const m = /<sheetData\s*\/>|<sheetData>([\s\S]*?)<\/sheetData>/.exec(src);
@@ -194,50 +211,60 @@ function patchSheet(files, text, sh, edit) {
     const cells = new Map();
     for (const c of (r[2] || "").matchAll(CELL_RE)) {
       const ref = attr(c[1], "r");
-      if (ref) cells.set(colIndex(ref), { s: attr(c[1], "s") ?? null, xml: c[0], ref });
+      if (ref) cells.set(colIndex(ref), { s: attr(c[1], "s") ?? null, xml: c[0] });
     }
     rows.set(num, { attrs: r[1].replace(/\s*\/$/, "").replace(/\sspans="[^"]*"/, ""), cells });
   }
+  const sst = [...(text("xl/sharedStrings.xml") || "").matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map((x) => textOf(x[1]));
+  return { src, m, rows, sst };
+}
 
+const cellText = (st, c) => {
+  if (!c) return "";
+  const type = attr(c.xml.match(/<c\b([^>]*)/)[1], "t");
+  const v = /<v>([\s\S]*?)<\/v>/.exec(c.xml)?.[1];
+  if (type === "s") return st.sst[Number(v)] ?? "";
+  if (type === "inlineStr") return textOf(c.xml);
+  return v === undefined ? "" : unxml(v);
+};
+
+/** Which column each requested heading is in; headings the sheet lacks are added to the right. */
+function resolveColumns(st, edit) {
   const hr = edit.headerRow;
-  const headerCells = rows.get(hr)?.cells || new Map();
-  const sharedStrings = (text("xl/sharedStrings.xml") || "");
-  const sst = [...sharedStrings.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map((x) => textOf(x[1]));
-  const cellText = (c) => {
-    if (!c) return "";
-    const type = attr(c.xml.match(/<c\b([^>]*)/)[1], "t");
-    const v = /<v>([\s\S]*?)<\/v>/.exec(c.xml)?.[1];
-    if (type === "s") return sst[Number(v)] ?? "";
-    if (type === "inlineStr") return textOf(c.xml);
-    return v === undefined ? "" : unxml(v);
-  };
-  const headers = new Map(); // normalised heading -> column
-  for (const [col, c] of headerCells) { const h = normHeader(cellText(c)); if (h && !headers.has(h)) headers.set(h, col); }
-
+  if (edit.lookup) { // only find the columns (so formulas elsewhere can point at them); nothing is added or written
+    const h = new Map();
+    for (const [col, c] of st.rows.get(hr)?.cells || []) { const t = normHeader(cellText(st, c)); if (t && !h.has(t)) h.set(t, col); }
+    return edit.columns.map((c) => ({ header: c.header, col: h.get(normHeader(c.header)), values: [], added: false }));
+  }
+  const hrow = st.rows.get(hr) || (st.rows.set(hr, { attrs: `r="${hr}"`, cells: new Map() }), st.rows.get(hr));
+  const headers = new Map();
+  for (const [col, c] of hrow.cells) { const h = normHeader(cellText(st, c)); if (h && !headers.has(h)) headers.set(h, col); }
   const wanted = edit.columns.map((c) => normHeader(c.header));
-  const below = [...rows.keys()].some((n) => n > hr && [...rows.get(n).cells.values()].some((c) => cellText(c) !== ""));
+  const below = [...st.rows.keys()].some((n) => n > hr && [...st.rows.get(n).cells.values()].some((c) => cellText(st, c) !== ""));
   if (wanted.length && headers.size && !wanted.some((h) => headers.has(h))) {
-    throw new Error(`Row ${hr} of “${sh.name}” has none of the column headings closet writes (${edit.columns.map((c) => `“${c.header}”`).join(", ")}). Check the header row number in Settings. Nothing was changed.`);
+    throw new Error(`Row ${hr} of “${edit.sheet}” has none of the column headings closet writes (${edit.columns.map((c) => `“${c.header}”`).join(", ")}). Check the header row number in Settings. Nothing was changed.`);
   }
   if (!headers.size && below) {
-    throw new Error(`Row ${hr} of “${sh.name}” is empty but the sheet has data below it. Check the header row number in Settings. Nothing was changed.`);
+    throw new Error(`Row ${hr} of “${edit.sheet}” is empty but the sheet has data below it. Check the header row number in Settings. Nothing was changed.`);
   }
-
   let next = headers.size ? Math.max(...headers.values()) + 1 : 0;
-  const added = [];
-  const hrow = rows.get(hr) || (rows.set(hr, { attrs: `r="${hr}"`, cells: new Map() }), rows.get(hr));
-  const cols = edit.columns.map((c) => {
+  return edit.columns.map((c) => {
     let col = headers.get(normHeader(c.header));
+    let added = false;
     if (col === undefined) {
       col = next++;
+      added = true;
       const left = hrow.cells.get(col - 1);
-      hrow.cells.set(col, { s: left?.s ?? null, xml: cellXml(col, hr, c.header, left?.s ?? null), ref: colLetter(col) + hr });
-      added.push(c.header);
+      hrow.cells.set(col, { s: left?.s ?? null, xml: cellXml(col, hr, c.header, left?.s ?? null) });
     }
-    return { col, values: c.values };
+    return { header: c.header, col, values: c.values, added };
   });
+}
 
-  const n = Math.max(0, ...cols.map((c) => c.values.length));
+function applyColumns(st, edit, cols) {
+  const { rows } = st;
+  const hr = edit.headerRow;
+  const n = Math.max(edit.minRows || 0, ...cols.map((c) => c.values.length));
   const last = Math.max(hr, ...rows.keys());
   const styleFor = (col) => {
     for (let r = hr + 1; r <= Math.min(last, hr + 6); r++) { const s = rows.get(r)?.cells.get(col)?.s; if (s) return s; }
@@ -257,15 +284,19 @@ function patchSheet(files, text, sh, edit) {
       }
     }
   }
+  return n;
+}
 
-  const body = [...rows.entries()].sort((a, b) => a[0] - b[0]).map(([, row]) => {
+function serializeSheet(st) {
+  const body = [...st.rows.entries()].sort((a, b) => a[0] - b[0]).map(([, row]) => {
     const cells = [...row.cells.entries()].sort((a, b) => a[0] - b[0]).map(([, c]) => c.xml).join("");
     return cells ? `<row ${row.attrs.trim()}>${cells}</row>` : `<row ${row.attrs.trim()}/>`;
   }).join("");
-  const out = src.slice(0, m.index).replace(/<dimension\b[^>]*\/>/, "") + `<sheetData>${body}</sheetData>` + src.slice(m.index + m[0].length);
-  files.set(sh.path, Buffer.from(out));
+  return st.src.slice(0, st.m.index).replace(/<dimension\b[^>]*\/>/, "") + `<sheetData>${body}</sheetData>` + st.src.slice(st.m.index + st.m[0].length);
+}
 
-  // a table over the data has to grow or shrink with it, or Excel offers to repair the file
+/** A table over the data has to grow or shrink with it, or Excel offers to repair the file. */
+function growTables(files, text, sh, hr, n) {
   const relsName = sh.path.replace(/([^/]+)$/, "_rels/$1.rels");
   for (const rel of (text(relsName) || "").matchAll(/<Relationship\b([^>]*?)\/?>/g)) {
     const t = attr(rel[1], "Target");
@@ -277,12 +308,15 @@ function patchSheet(files, text, sh, edit) {
     const end = hr + Math.max(1, n);
     files.set(tp, Buffer.from(tx.replace(/(<table\b[^>]*?\sref=")[^"]*(")/, `$1${ref[1]}${hr}:${ref[3]}${end}$2`).replace(/(<autoFilter\b[^>]*?\sref=")[^"]*(")/, `$1${ref[1]}${hr}:${ref[3]}${end}$2`)));
   }
-  return { sheet: sh.name, rows: n, added };
 }
 
 function cellXml(col, row, v, style) {
   const ref = colLetter(col) + row;
   const s = style ? ` s="${style}"` : "";
+  if (v && typeof v === "object" && "f" in v) {
+    const cached = v.v === undefined || v.v === null ? "" : typeof v.v === "number" ? `<v>${v.v}</v>` : `<v>${xml(v.v)}</v>`;
+    return `<c r="${ref}"${s}${typeof v.v === "string" ? ' t="str"' : ""}><f>${xml(v.f)}</f>${cached}</c>`;
+  }
   if (v && typeof v === "object" && "date" in v) return style ? `<c r="${ref}"${s}><v>${v.date}</v></c>` : `<c r="${ref}" t="inlineStr"><is><t>${xml(serialToIso(v.date) || "")}</t></is></c>`;
   if (typeof v === "number" && Number.isFinite(v)) return `<c r="${ref}"${s}><v>${v}</v></c>`;
   return `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xml(v)}</t></is></c>`;

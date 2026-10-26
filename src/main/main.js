@@ -109,7 +109,7 @@ async function route(method, url, body) {
   if (method === "POST" && p === "/api/notify/tie") { store.notify.answerTie(String(body?.id || ""), String(body?.cadet || ""), body?.yes === true); return { version: store.version }; }
   if (method === "PUT" && p === "/api/notify/signature") return store.notify.setSignature(body || {});
   if (method === "PUT" && p === "/api/notify/content") return store.notify.setContent(body || {});
-  if (method === "GET" && p === "/api/tracker") return store.tracker.view(store.snapshot());
+  if (method === "GET" && p === "/api/tracker") return store.tracker.view(store.snapshot(), q.get("before") || "");
   if (method === "POST" && p === "/api/tracker/pull") return store.tracker.pull();
   if (method === "POST" && p === "/api/tracker/push") return store.tracker.push();
   if (method === "PUT" && p === "/api/notify/auto") return store.notify.setAuto(body || {});

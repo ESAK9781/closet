@@ -24,7 +24,7 @@ dump folder are never moved, and only changed by the few explicit actions listed
 | `src/core/signable.js` | PDF structure checks ("can Adobe sign here?") and edits as incremental updates: `addField`, `fillSlots`, `approveAoc` |
 | `src/core/notify.js` | Email: the contact registry (`metadata/notify.json`), the per-cadet summary email, sending, and automatic stage updates. Talks to Gmail only through the `mailer` the Store is given |
 | `src/core/people.js`, `contacts.js` | Name-format matching ("Last, First M", rank, order, typos within two letters); reading a contact spreadsheet (csv/tsv/xlsx via `backup.js`'s zip reader) into name/email pairs |
-| `src/core/tracker.js`, `xlsx.js` | Served tours/confinements and balances: reads the serving log of the discipline workbook, optionally overwrites its conduct log, builds a blank workbook. Every sheet name, row and heading is a setting (`settings.tracker`). `xlsx.js` edits a workbook in place (other parts of the zip are kept byte for byte) with no spreadsheet dependency |
+| `src/core/tracker.js`, `xlsx.js`, `cloud.js` | Served tours/confinements and balances: reads the serving log of the discipline workbook, optionally overwrites its conduct log, builds a blank workbook. Every sheet name, row and heading is a setting (`settings.tracker`). `xlsx.js` edits a workbook in place (other parts of the zip are kept byte for byte) with no spreadsheet dependency |
 | `src/main/mailer.js` | Gmail via nodemailer; the app password is encrypted with `safeStorage` in userData `config.json`, never in metadata or backups |
 | `src/core/records.js` | Pure functions turning raw slot values + overrides into tracker records and sheet rows |
 | `src/core/templates.js` | The *meaning* of each template field (semantic key, label, section) and the routing-flag definitions |
@@ -103,6 +103,9 @@ instead of the renderer polling; `load()` in `app.js` re-fetches the whole snaps
 
 - Reading is free; **writing is opt-in** (`tracker.push.enabled`) and always saves a copy to `metadata/sheet-backups` first. Pushing only touches the columns it is told to (found by heading), never the serving log, and refuses when the header row doesn't look right rather than guessing.
 - The user's real tracker contains names: tests build workbooks with `createTemplate`/`patchWorkbook`; never commit a real one.
+- `record.counted` (= fully signed on every applicable routing flag, not rejected, not archived) is the only thing that makes tours, confinements, passes or CDNA count: balances, overview/cadet totals, email totals and the sheet's formulas (via the conduct log's Status column) all follow it. **Rejected** (`meta.rejected`) is a form status like archived but stays visible; it must be excluded from anything that sends a form onward (quickdump, sync push, bulk steps, automatic emails).
+- Anything read from or written to a folder the user owns may be a OneDrive placeholder: go through `cloud.js` (`ensureLocal` before reading, `settle` after writing).
+- Push overwrites all three sheets; the serving log is re-read first and written back verbatim (`state.raw`), and the balances sheet is names + formulas only, never read back.
 - Balance = assigned (from forms) - served (from the sheet), floored at 0, per name key. Email content (`notify.content`) is plain on/off switches; keep `compose()` honoring them.
 
 ## Email

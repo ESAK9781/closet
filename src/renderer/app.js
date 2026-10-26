@@ -80,8 +80,9 @@ const S = {
   syncPick: null,
   stale: false,
   setTab: "general", // Settings sub-tab
+  folds: {},         // which collapsible settings sections are open
   tv: null,          // discipline workbook + balances, fetched when Balances or its settings are open
-  balQ: "", balF: "owing", // Balances: search and filter
+  balQ: "", balF: "owing", balBefore: "", // Balances: search, filter, and "only sanctions issued before"
   nv: null,          // notifications data (contacts, people, log), fetched when a notifications screen is open
   cQ: "", cFilter: "all", cSel: new Set(), importReport: null, // contact list in Settings
   nSel: new Set(), nSubject: "Conduct paperwork update", nMessage: "", nQ: "", nClass: "all", nFilter: "all", sending: false, // Notifications tab
@@ -200,7 +201,7 @@ function fmtStamp(s) {
 
 // ------------------------------------------------------------------ derived data
 // Archived forms keep their file and metadata but drop out of every count, chart, queue and export.
-const active = () => (S.data?.forms || []).filter((f) => !f.missing && !f.archived);
+const active = () => (S.data?.forms || []).filter((f) => !f.missing && !f.archived && !f.rejected); // rejected forms are out of the process and every count; the Paperwork list still shows them
 const archived = () => (S.data?.forms || []).filter((f) => f.archived);
 const isIncomplete = (f) => (f.incomplete || []).length > 0;
 const inQueue = (f) => f.needs_review || isIncomplete(f);
@@ -404,8 +405,9 @@ function viewOverview() {
   const review = all.filter(inQueue).length;
   const unlogged = forms.filter((f) => !f.logged);
   const rows = forms.flatMap((f) => f.rows);
-  const tours = rows.reduce((a, r) => a + num(r[colIdx("Tours")]), 0);
-  const conf = rows.reduce((a, r) => a + num(r[colIdx("Confinements")]), 0);
+  const signed = forms.filter((f) => f.record.counted).flatMap((f) => f.rows); // tours and confinements count once everyone has signed
+  const tours = signed.reduce((a, r) => a + num(r[colIdx("Tours")]), 0);
+  const conf = signed.reduce((a, r) => a + num(r[colIdx("Confinements")]), 0);
   const dem = rows.reduce((a, r) => a + num(r[colIdx("Demerits")]), 0);
   const tot = Math.max(1, neg + pos);
 
@@ -428,7 +430,7 @@ function viewOverview() {
       <a class="kpi accent" href="#/paperwork" data-status="awaiting"><div class="v">${waiting.length}</div><div class="l">Awaiting a signature</div></a>
       <a class="kpi" href="#/review"><div class="v" style="${review ? "color:var(--crit)" : ""}">${review}</div><div class="l">Need review or are incomplete</div></a>
       <a class="kpi" href="#/export"><div class="v">${unlogged.length}</div><div class="l">Not in the tracker yet</div></a>
-      <div class="kpi"><div class="v">${tours}</div><div class="l">Tours issued, plus ${conf} confinements and ${dem} demerits</div></div>
+      <div class="kpi"><div class="v">${tours}</div><div class="l">Tours fully signed, plus ${conf} confinements and ${dem} demerits</div></div>
     </section>
     <div class="grid-2">
       <section class="panel"><div class="panel-head"><h2>Paperwork by month</h2><span class="spacer"></span>
@@ -603,7 +605,7 @@ function autoMenuHtml() {
 // which form it is, positive or negative); one choice per group, groups combine. Counts follow the
 // other groups, so a preset that would show nothing isn't offered.
 const FILTER_OFF = { q: "", type: "all", pn: "all", step: "all" };
-const firstOpen = (f) => (f.parsed ? FLAGS.find(([k]) => f.record[k] === false)?.[0] ?? "complete" : null);
+const firstOpen = (f) => (f.rejected ? "rejected" : f.parsed ? FLAGS.find(([k]) => f.record[k] === false)?.[0] ?? "complete" : null);
 
 function matchesFilters(f, F, skip = "") {
   const r = f.record || {};
@@ -613,7 +615,7 @@ function matchesFilters(f, F, skip = "") {
   if (skip !== "step" && F.step !== "all") {
     const st = firstOpen(f);
     if (F.step === "review") { if (!f.needs_review) return false; }
-    else if (F.step === "open" ? !st || st === "complete" : st !== F.step) return false;
+    else if (F.step === "open" ? !st || st === "complete" || st === "rejected" : st !== F.step) return false;
   }
   if (q) {
     const hay = [f.filename, r.recipients, r.reason_category, r.reason_details, r.issuer, r.class_year, f.notes].join(" ").toLowerCase();
@@ -649,8 +651,8 @@ function renderFilters() {
   const pool = (S.data.forms || []).filter((f) => !f.archived);
   const facet = (key) => pool.filter((f) => matchesFilters(f, S.f, key));
   const stepF = facet("step");
-  const steps = [["all", "Any progress", stepF.length], ["review", "Needs review", stepF.filter((f) => f.needs_review).length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete"; }).length],
-    ...FLAGS.map(([k, short]) => [k, `Needs ${short}`, stepF.filter((f) => firstOpen(f) === k).length]), ["complete", "Fully complete", stepF.filter((f) => firstOpen(f) === "complete").length]];
+  const steps = [["all", "Any progress", stepF.length], ["review", "Needs review", stepF.filter((f) => f.needs_review).length], ["open", "Still needs a signature", stepF.filter((f) => { const s = firstOpen(f); return s && s !== "complete" && s !== "rejected"; }).length],
+    ...FLAGS.map(([k, short]) => [k, `Needs ${short}`, stepF.filter((f) => firstOpen(f) === k).length]), ["complete", "Fully complete", stepF.filter((f) => firstOpen(f) === "complete").length], ["rejected", "Rejected", stepF.filter((f) => f.rejected).length]];
   const typeF = facet("type");
   const types = [["all", "Any form", typeF.length], ["F10", "Form 10", typeF.filter((f) => f.record.form_type === "F10").length], ["F174", "AF 174", typeF.filter((f) => f.record.form_type === "F174").length]];
   const pnF = facet("pn");
@@ -704,16 +706,17 @@ function renderPaperRows() {
       let status = [];
       if (f.missing) status.push('<span class="chip crit">File missing</span>');
       if (!f.parsed) status.push('<span class="chip muted">Reading…</span>');
+      if (f.rejected) status.push(`<span class="chip crit" title="${esc(fmtStamp(f.rejected_at))}">Rejected</span>`);
       if (f.needs_review) status.push('<span class="chip crit">Needs review</span>');
       if (isIncomplete(f)) status.push(`<span class="chip warn" title="Positive F10 missing ${esc(f.incomplete.join(" and "))}">Incomplete</span>`);
       if (f.logged) status.push(`<span class="logged" title="Logged ${esc(fmtStamp(f.logged_at))}">${icon("check")}In tracker</span>`);
-      return `<tr class="click" data-open="${f.id}" tabindex="0">
+      return `<tr class="click ${f.rejected ? "rejected" : ""}" data-open="${f.id}" tabindex="0">
         <td class="nowrap">${f.parsed ? fmtDate(r.date_iso, r.date) : ""}</td>
         <td><div class="who">${whoLine(r, f.filename)}</div><div class="sub">${esc(r.reason_category || f.filename)}</div></td>
         <td>${r.form_type ? `<span class="chip type">${esc(r.form_type)}</span>` : ""}</td>
         <td>${f.parsed ? pnChip(r.pos_neg) : ""}</td>
         <td><div class="sub" style="color:var(--text-2)">${esc(r.issuer || "")}</div></td>
-        <td>${f.parsed ? routeMini(r) : ""}</td>
+        <td>${f.parsed && !f.rejected ? routeMini(r) : f.rejected ? '<span class="dim">Stopped</span>' : ""}</td>
         <td><div class="status-cell">${status.join("")}</div></td>
         <td class="nowrap" style="text-align:right"><button class="icon-btn" type="button" data-archive="${f.id}" title="Archive: keep the file and record, leave it out of stats and exports" aria-label="Archive ${esc(f.filename)}">${icon("archive")}</button></td></tr>`;
     }).join("")}</tbody></table></div>`;
@@ -806,6 +809,7 @@ function detailHead(d) {
   if (d.logged) chips.push(`<span class="chip good" title="${esc(fmtStamp(d.logged_at))}">In tracker</span>`);
   if (d.missing) chips.push('<span class="chip crit">File missing from dump</span>');
   if (d.archived) chips.push(`<span class="chip muted" title="${esc(fmtStamp(d.archived_at))}">Archived</span>`);
+  if (d.rejected) chips.push(`<span class="chip crit" title="${esc(fmtStamp(d.rejected_at))}">Rejected</span>`);
   return `<header class="d-head"><div style="min-width:0"><h2>${names ? esc(names) : `<span style="color:var(--muted)">${d.parsed ? "No name on the form" : "Reading…"}</span>`}</h2><div class="fn">${esc(d.filename)}</div><div class="chips">${chips.join("")}</div></div>
     <div class="spacer"></div><div class="acts">
       <button class="btn ghost small" type="button" data-act="openpdf" title="Open in your PDF viewer (Shift-click: show in folder)">${icon("ext")}Open PDF</button>
@@ -813,6 +817,9 @@ function detailHead(d) {
       <button class="btn ghost small" type="button" data-act="upload" title="Replace this PDF with an updated (e.g. signed) copy">${icon("upload")}Upload updated copy</button>
       <button class="btn ghost small" type="button" data-act="copyrows">${icon("copy")}Copy sheet rows</button>
       <button class="btn ghost small" type="button" data-act="reparse" title="Read the PDF again (your edits are kept)">${icon("refresh")}Re-read</button>
+      ${d.rejected
+        ? `<button class="btn ghost small" type="button" data-act="unreject" title="Put this form back in the process">${icon("refresh")}Undo rejection</button>`
+        : `<button class="btn ghost small" type="button" data-act="reject" title="Someone on the route turned this form down: it stops going out for signatures and stops counting, but stays in the list">${icon("x")}Mark rejected</button>`}
       ${d.archived
         ? `<button class="btn ghost small" type="button" data-act="unarchive" title="Count this form again">${icon("archive")}Restore</button>`
         : `<button class="btn ghost small" type="button" data-act="archive" title="Keep the file and its record, but leave it out of stats and exports">${icon("archive")}Archive</button>`}
@@ -1186,6 +1193,26 @@ async function act(a) {
     } else if (r?.error) toast(r.error, true);
     return;
   }
+  if (a === "reject" || a === "unreject") {
+    if (!(await okToDiscard("this form"))) return;
+    const on = a === "reject";
+    if (on) {
+      const ok = await ask({
+        title: "Mark this form rejected?",
+        message: "<p>Someone on the route turned this form down. It will <b>stop going out for signatures</b> (quick dump, sync, bulk steps), <b>stop getting automatic emails</b>, and <b>stop counting</b> toward tours, confinements, passes and CDNA. It stays in the Paperwork list marked <b>Rejected</b>, and you can undo this at any time.</p>",
+        choices: [{ label: "Cancel", value: null }, { label: "Mark rejected", value: true, primary: true }], danger: true,
+      });
+      if (!ok) return;
+    }
+    await api(`/api/forms/${d.id}`, { method: "PATCH", body: { rejected: on } });
+    toast(on ? "Marked rejected. It's out of the process and no longer counts." : "Back in the process.");
+    const host = S.host;
+    S.edit = blankEdit();
+    await load();
+    if (host === "review") { S.reviewId = null; renderView(); }
+    else openForm(d.id, { keepPage: true, silent: true, host });
+    return;
+  }
   if (a === "archive" || a === "unarchive") {
     if (!(await okToDiscard("this form"))) return;
     const on = a === "archive";
@@ -1379,7 +1406,8 @@ function cadetIndex() {
       c.forms.push(f);
       if (row[1] && !c.year) c.year = row[1];
       row[8] === S.data.settings.pos_label ? c.pos++ : c.neg++;
-      c.dem += num(row[colIdx("Demerits")]); c.tours += num(row[colIdx("Tours")]); c.conf += num(row[colIdx("Confinements")]);
+      c.dem += num(row[colIdx("Demerits")]);
+      if (f.record.counted) { c.tours += num(row[colIdx("Tours")]); c.conf += num(row[colIdx("Confinements")]); } // only once fully signed
       if ((f.record.date_iso || "") > c.last) c.last = f.record.date_iso || "";
       m.set(k, c);
     });
@@ -1662,8 +1690,9 @@ function viewSettings() {
 const needsTracker = () => S.view === "balances" || (S.view === "settings" && S.setTab === "sheet");
 async function refreshTracker() {
   if (!needsTracker()) return;
-  try { S.tv = await api("/api/tracker"); } catch (e) { toast("Couldn't load balances: " + e.message, true); }
+  try { S.tv = await api("/api/tracker" + (S.view === "balances" && S.balBefore ? `?before=${S.balBefore}` : "")); } catch (e) { toast("Couldn't load balances: " + e.message, true); }
 }
+const isoDaysAgo = (d) => { const t = new Date(); t.setDate(t.getDate() - d); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; };
 const owe = (b) => (b.left ? `<b class="owe">${b.left}</b>` : '<span class="dim">0</span>');
 
 function viewBalances() {
@@ -1681,14 +1710,23 @@ function viewBalances() {
     ${tv.error ? `<div class="banner">${icon("alert")}<span>${esc(tv.error)} <a href="#/settings/sheet">Open Discipline sheet settings</a></span></div>` : ""}
     ${tv.unmatched?.length ? `<div class="banner info">${icon("info")}<span>${plural(tv.unmatched.length, "name")} in the serving log ${tv.unmatched.length === 1 ? "has" : "have"} no paperwork in closet (${esc(tv.unmatched.slice(0, 4).join(", "))}${tv.unmatched.length > 4 ? ", …" : ""}). They're listed below as not on file; check the spelling in the sheet if one is a typo.</span></div>` : ""}
     <section class="kpis">
-      <div class="kpi accent"><div class="v">${t.tours.left}</div><div class="l">Tours still to serve (${t.tours.served} of ${t.tours.assigned} served)</div></div>
-      <div class="kpi accent"><div class="v">${t.confinements.left}</div><div class="l">Confinements still to serve (${t.confinements.served} of ${t.confinements.assigned} served)</div></div>
+      <div class="kpi accent"><div class="v">${t.tours.left}</div><div class="l">Tours ${tv.before ? "from before that date " : ""}still to serve (${t.tours.served} served, ${t.tours.assigned} assigned)</div></div>
+      <div class="kpi accent"><div class="v">${t.confinements.left}</div><div class="l">Confinements ${tv.before ? "from before that date " : ""}still to serve (${t.confinements.served} served, ${t.confinements.assigned} assigned)</div></div>
       <div class="kpi"><div class="v">${tv.balances.filter((p) => p.tours.left || p.confinements.left).length}</div><div class="l">Cadets with a balance</div></div>
     </section>
     <div class="toolbar"><label class="search">${icon("search")}<input class="input" id="bq" type="search" placeholder="Find a cadet" value="${esc(S.balQ)}" aria-label="Find a cadet"></label>
       <select class="select" id="bf" aria-label="Show">${[["owing", "Owing tours or confinements"], ["all", "Everyone"]].map(([v, l]) => `<option value="${v}" ${S.balF === v ? "selected" : ""}>${l}</option>`).join("")}</select>
       <span class="spacer"></span><span class="dim">${read}</span></div>
+    <div class="toolbar" id="cutoff"><label class="fld inline"><span>Only sanctions issued before</span><input class="input" id="bb" type="date" value="${esc(S.balBefore)}" aria-label="Only sanctions issued before"></label>
+      ${[["1 week ago", 7], ["2 weeks ago", 14], ["30 days ago", 30], ["60 days ago", 60], ["90 days ago", 90]].map(([l, d]) => `<button class="btn small ${S.balBefore === isoDaysAgo(d) ? "" : "ghost"}" type="button" data-bpreset="${d}">${l}</button>`).join("")}
+      ${S.balBefore ? '<button class="btn small ghost" type="button" id="bbClear">Clear</button>' : ""}</div>
+    ${S.balBefore ? `<div class="banner info">${icon("info")}<span>Showing only fully signed sanctions on forms dated before <b>${esc(fmtDate(S.balBefore))}</b>. Everything served so far is applied to the oldest first, so what's left is what has gone unserved the longest.</span></div>` : ""}
     <div id="results"></div>`;
+  const setBefore = async (v) => { S.balBefore = v; await refreshTracker(); viewBalances(); };
+  $("#bb").onchange = (e) => setBefore(e.target.value);
+  $$("[data-bpreset]").forEach((b) => (b.onclick = () => setBefore(isoDaysAgo(Number(b.dataset.bpreset)))));
+  const bbc = $("#bbClear");
+  if (bbc) bbc.onclick = () => setBefore("");
   $("#bq").oninput = (e) => { S.balQ = e.target.value; renderBalanceRows(); };
   $("#bf").onchange = (e) => { S.balF = e.target.value; renderBalanceRows(); };
   const pull = $("#tvPull");
@@ -1708,11 +1746,10 @@ function renderBalanceRows() {
     $("#results").innerHTML = `<div class="panel"><div class="empty">${icon("check")}<h3>${S.tv.balances.length ? "Nobody matches" : "No cadets yet"}</h3><p>${S.tv.balances.length ? (S.balF === "owing" && !q ? "No one owes tours or confinements right now." : "Clear the search or show everyone.") : "Cadets appear once their paperwork is in the dump folder."}</p></div></div>`;
     return;
   }
-  $("#results").innerHTML = `<div class="table-wrap"><table class="t"><thead><tr><th>Cadet</th><th>Class</th><th class="num" title="Assigned on forms">Tours assigned</th><th class="num">Served</th><th class="num">Left</th><th class="num">Confinements assigned</th><th class="num">Served</th><th class="num">Left</th><th>Status</th></tr></thead><tbody>
-    ${list.map((p) => `<tr><td class="who">${esc(p.name)}</td><td>${esc(p.class_year) || '<span class="dim">—</span>'}</td>
+  $("#results").innerHTML = `<div class="table-wrap"><table class="t"><thead><tr><th>Cadet</th><th>Class</th><th class="num" title="Assigned on forms">Tours assigned</th><th class="num">Served</th><th class="num">Left</th><th class="num">Confinements assigned</th><th class="num">Served</th><th class="num">Left</th></tr></thead><tbody>
+    ${list.map((p) => `<tr><td class="who">${esc(p.name)}${p.on_file ? "" : ' <span class="chip muted" title="Named in the serving log but no paperwork in closet">Not on file</span>'}</td><td>${esc(p.class_year) || '<span class="dim">—</span>'}</td>
       <td class="num">${p.tours.assigned}</td><td class="num">${p.tours.served}</td><td class="num">${owe(p.tours)}</td>
-      <td class="num">${p.confinements.assigned}</td><td class="num">${p.confinements.served}</td><td class="num">${owe(p.confinements)}</td>
-      <td>${!p.on_file ? '<span class="chip muted" title="Named in the serving log but no paperwork in closet">Not on file</span>' : p.tours.left || p.confinements.left ? '<span class="chip warn">Outstanding</span>' : p.tours.over || p.confinements.over ? '<span class="chip muted" title="Served more than was assigned">Over-served</span>' : '<span class="chip good">Clear</span>'}</td></tr>`).join("")}
+      <td class="num">${p.confinements.assigned}</td><td class="num">${p.confinements.served}</td><td class="num">${owe(p.confinements)}</td></tr>`).join("")}
     </tbody></table></div>`;
 }
 
@@ -1732,27 +1769,39 @@ function settingsSheet() {
   const sw = (key, on, label) => `<label class="switch"><input type="checkbox" data-tkb="${key}" ${on ? "checked" : ""} aria-label="${esc(label)}"><span class="track"></span><span class="lbl">${on ? "On" : "Off"}</span></label>`;
   const status = !c.path ? "" : tv.error ? `<span class="chip crit">${esc(tv.error)}</span>`
     : tv.pulled_at ? `<span class="chip good">Read ${esc(when(tv.pulled_at))}</span> <span class="dim">${plural(tv.entries, "serving record")}${tv.skipped && Object.values(tv.skipped).some(Boolean) ? `, skipped ${esc(Object.entries({ unnamed: "with no name", unknown_type: "that aren't tours or confinements", bad_amount: "with no amount" }).filter(([k]) => tv.skipped[k]).map(([k, l]) => `${tv.skipped[k]} ${l}`).join(", "))}` : ""}</span>` : "";
+  const fold = (id, title, sub, inner) => `<details class="panel fold" data-fold="${id}" ${S.folds[id] ? "open" : ""}><summary class="panel-head"><h2>${title}</h2><span class="sub">${sub}</span><span class="spacer"></span>${icon("chev", "fold-chev")}</summary><div class="panel-body">
+${inner}</div></details>`;
   return `
+    <section class="panel sheet-bar"><div class="panel-body">
+      <div class="bar-row">
+        <button class="btn" type="button" id="tkPull" ${c.path ? "" : "disabled"} title="Read what has been served from the workbook now">${icon("refresh")}Read the sheet</button>
+        <button class="btn primary" type="button" id="tkPush" ${p.enabled && c.path ? "" : "disabled"} title="${p.enabled ? "Overwrite the workbook with closet's records" : "Turn on “Allow writing” first"}">${icon("upload")}Write to workbook…</button>
+        <label class="switch" title="Writing overwrites the workbook, so it's off until you allow it"><input type="checkbox" data-tkb="push.enabled" ${p.enabled ? "checked" : ""} aria-label="Allow writing"><span class="track"></span><span class="lbl">Allow writing</span></label>
+        <span class="spacer"></span>
+        <span class="bar-status">${status || '<span class="dim">No workbook set</span>'}${tv.push.last ? ` <span class="dim">· written ${esc(when(tv.push.last.at))}, ${plural(tv.push.last.rows, "row")}</span>` : ""}</span>
+      </div>
+      <p class="hint" style="margin:10px 0 0">Reading never changes the workbook. Writing overwrites the conduct log with closet's records, the serving log (read again first, so nothing entered since the last sync is lost) and the balances sheet (names plus live formulas), after saving a copy to metadata/sheet-backups. Close the workbook in Excel first; in OneDrive it is downloaded before reading and left to sync after writing.</p>
+    </div></section>
+
     <section class="panel"><div class="panel-head"><h2>Discipline workbook</h2><span class="sub">where served tours and confinements are tracked</span></div><div class="panel-body">
       ${setRow("Excel workbook", "closet reads the serving log in this workbook to learn what each cadet has served, and works out what they still owe. Only completed discipline is read from it: the conduct log is never used to learn about forms. Use File → Download → Microsoft Excel if yours lives in Google Sheets.",
         `<div class="path">${c.path ? esc(c.path) : '<span class="dim">Not set</span>'}</div><div class="pair" style="margin-top:8px"><button class="btn small" type="button" id="tkChoose">${icon("folder")}${c.path ? "Change…" : "Choose…"}</button>${c.path ? '<button class="btn small ghost" type="button" id="tkClear">Clear</button>' : ""}</div>${status ? `<div style="margin-top:8px">${status}</div>` : ""}`)}
       ${setRow("Create a new workbook", "Writes a blank workbook laid out the way the settings below expect: a conduct log, a serving log (with a Tour / Confinement dropdown) and cadet balances that add themselves up. If no workbook is set yet, the new one is used.",
         `<button class="btn" type="button" id="tkCreate">${icon("download")}Create new workbook…</button>`)}
       ${setRow("Keep up to date", "Read the serving log again whenever the file changes (checked every 20 seconds). Reading never changes the workbook.", sw("auto_pull", c.auto_pull, "Read automatically"))}
-      ${c.path ? setRow("Read it now", "Read the serving log right away.", `<button class="btn small" type="button" id="tkPull">${icon("refresh")}Read the sheet</button>`) : ""}
     </div></section>
 
-    <section class="panel"><div class="panel-head"><h2>Serving log layout</h2><span class="sub">defaults match the CS07 tracker; change them for another layout</span></div><div class="panel-body">
+
+    ${fold("served", "Serving log layout", "where served tours are read from; defaults match the CS07 tracker", `
       ${setRow("Sheet and header row", "The sheet (tab) holding the serving log and the row its column headings are on. If the headings aren't on that row closet looks for them near the top.",
         `<div class="pair">${txt("served.sheet", sv.sheet, 'aria-label="Sheet name"')}${txt("served.header_row", sv.header_row, 'type="number" min="1" max="1000" aria-label="Header row" style="max-width:90px"')}</div>`)}
       ${setRow("Column headings", "The heading text of each column, exactly as the sheet spells it (case and punctuation don't matter). Cadet, type and amount are required; leave date, supervisor or notes blank if the sheet has none.",
         `<div class="stack">${Object.entries(SERVED_LABELS).map(([k, l]) => `<label class="fld" style="width:100%;margin:0"><span>${l}</span>${txt(`served.columns.${k}`, sv.columns[k], `aria-label="${l} heading"`)}</label>`).join("")}</div>`)}
       ${setRow("Words in the type column", "What the sanction type column says for each kind. A cell that contains the word counts (so “Tour” also catches “tours”).",
         `<div class="pair">${txt("served.tour_word", sv.tour_word, 'aria-label="Word for tours"')}${txt("served.confinement_word", sv.confinement_word, 'aria-label="Word for confinements"')}</div>`)}
-    </div></section>
+`)}
 
-    <section class="panel"><div class="panel-head"><h2>Write closet's records into the workbook</h2><span class="sub">replaces what the sheet has now</span></div><div class="panel-body">
-      ${setRow("Allow writing", "Off by default. When on, the <b>Write to workbook</b> button below replaces every row of the conduct log with closet's records (one row per recipient). A copy of the workbook is saved first, the serving log is never touched, and other columns and sheets are left as they are. Close the workbook in Excel before writing.", sw("push.enabled", p.enabled, "Allow writing"))}
+    ${fold("conduct", "Conduct log columns", "what closet writes into the conduct log", `
       ${setRow("Sheet and header row", "Where the conduct log is.", `<div class="pair">${txt("push.sheet", p.sheet, 'aria-label="Conduct log sheet"')}${txt("push.header_row", p.header_row, 'type="number" min="1" max="1000" aria-label="Conduct log header row" style="max-width:90px"')}</div>`)}
       <div class="set-row"><div><h3>Columns</h3><p>Each line is a column in the workbook: its heading, and what closet writes under it. A heading the sheet doesn't have yet is added to the right. Order doesn't matter, columns are found by heading.</p></div><div></div></div>
       <div class="table-wrap"><table class="t"><thead><tr><th>Heading in the sheet</th><th>What closet writes</th><th></th></tr></thead><tbody>
@@ -1761,11 +1810,19 @@ function settingsSheet() {
           <td><button class="icon-btn" type="button" data-pcx="${i}" aria-label="Remove column ${i + 1}">${icon("x")}</button></td></tr>`).join("")}
       </tbody></table></div>
       <div class="pair" style="margin:10px 0 18px"><button class="btn small" type="button" id="pcAdd">Add a column</button><button class="btn small ghost" type="button" id="pcReset">Back to the defaults</button></div>
-      ${setRow("Fill in cadet names on the balances sheet", "Also writes each cadet's name under a heading on the balances sheet, so its own formulas can add up that cadet's reports and tours. Nothing else on that sheet is written.", sw("push.balances.enabled", p.balances.enabled, "Write cadet names"))}
-      ${p.balances.enabled ? setRow("Balances sheet", "The sheet, its header row, and the heading of the name column.", `<div class="stack"><div class="pair">${txt("push.balances.sheet", p.balances.sheet, 'aria-label="Balances sheet"')}${txt("push.balances.header_row", p.balances.header_row, 'type="number" min="1" max="1000" aria-label="Balances header row" style="max-width:90px"')}</div>${txt("push.balances.header", p.balances.header, 'aria-label="Name column heading"')}</div>`) : ""}
-      ${setRow("Write now", tv.push.last ? `Last written ${esc(when(tv.push.last.at))}: ${plural(tv.push.last.rows, "row")}. The workbook as it was before is saved under metadata/sheet-backups.` : "Nothing has been written yet.",
-        `<button class="btn" type="button" id="tkPush" ${p.enabled && c.path ? "" : "disabled"} title="${p.enabled ? "" : "Turn on “Allow writing” first"}">${icon("upload")}Write to workbook…</button>`)}
-    </div></section>`;
+      <p class="hint">Each line is a column in the workbook: its heading, and what closet writes under it. A heading the sheet doesn't have yet is added to the right. Columns are found by heading, so their order doesn't matter.</p>`)}
+
+    ${fold("balances", "Serving log and balances sheet when writing", "which sheets are rewritten, and the balance formulas", `
+      ${setRow("Rewrite the serving log", "Writes the rows back exactly as read (rows closet couldn't use stay too), with each cadet's name spelled the way it is on the forms, so the balance formulas find them. Turn off to leave the serving log alone.", sw("push.served.enabled", p.served.enabled, "Rewrite the serving log"))}
+      ${setRow("Write the balances sheet", "Cadet names with a formula in every other column. Tours and confinements count only on forms whose Status column says Complete. closet never reads this sheet back.", sw("push.balances.enabled", p.balances.enabled, "Write the balances sheet"))}
+      ${p.balances.enabled ? `${setRow("Balances sheet", "The sheet and the row its headings are on.", `<div class="pair">${txt("push.balances.sheet", p.balances.sheet, 'aria-label="Balances sheet"')}${txt("push.balances.header_row", p.balances.header_row, 'type="number" min="1" max="1000" aria-label="Balances header row" style="max-width:90px"')}</div>`)}
+      <div class="table-wrap"><table class="t"><thead><tr><th>Heading in the sheet</th><th>Formula shows</th><th></th></tr></thead><tbody>
+        ${p.balances.columns.map((col, i) => `<tr><td><input class="input cell" data-bc="${i}|header" value="${esc(col.header)}" aria-label="Balances heading ${i + 1}"></td>
+          <td><select class="select" data-bc="${i}|source" aria-label="Balances source ${i + 1}">${tv.balance_sources.map(([k, l]) => `<option value="${k}" ${col.source === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></td>
+          <td><button class="icon-btn" type="button" data-bcx="${i}" aria-label="Remove balances column ${i + 1}">${icon("x")}</button></td></tr>`).join("")}
+      </tbody></table></div>
+      <div class="pair" style="margin:10px 0 18px"><button class="btn small" type="button" id="bcAdd">Add a column</button><button class="btn small ghost" type="button" id="bcReset">Back to the defaults</button></div>` : ""}
+`)}`;
 }
 
 function bindSettingsSheet() {
@@ -1779,6 +1836,7 @@ function bindSettingsSheet() {
     document.activeElement?.blur?.(); // a switch changes what else is shown: redraw now, not on the next click
     await load();
   };
+  $$("details.fold").forEach((d) => d.addEventListener("toggle", () => { S.folds[d.dataset.fold] = d.open; }));
   const nest = (path, v) => path.split(".").reduceRight((acc, k) => ({ [k]: acc }), v);
   $$("[data-tk]").forEach((el) => (el.onchange = () => save(nest(el.dataset.tk, el.type === "number" ? Number(el.value) : el.value))));
   $$("[data-tkb]").forEach((el) => (el.onchange = () => save(nest(el.dataset.tkb, el.checked))));
@@ -1792,6 +1850,16 @@ function bindSettingsSheet() {
   $$("[data-pcx]").forEach((b) => (b.onclick = () => { const next = cols(); next.splice(Number(b.dataset.pcx), 1); save({ push: { columns: next } }, "Column removed"); }));
   click("#pcAdd", () => save({ push: { columns: [...cols(), { header: `Column ${cols().length + 1}`, source: "other" }] } }, "Column added"));
   click("#pcReset", () => save({ push: { columns: S.tv.defaults.push.columns } }, "Columns reset"));
+  const bcols = () => S.data.settings.tracker.push.balances.columns.map((c) => ({ ...c }));
+  $$("[data-bc]").forEach((el) => (el.onchange = () => {
+    const [i, k] = el.dataset.bc.split("|");
+    const next = bcols();
+    next[Number(i)][k] = el.value;
+    save({ push: { balances: { columns: next } } });
+  }));
+  $$("[data-bcx]").forEach((b) => (b.onclick = () => { const next = bcols(); next.splice(Number(b.dataset.bcx), 1); save({ push: { balances: { columns: next } } }, "Column removed"); }));
+  click("#bcAdd", () => save({ push: { balances: { columns: [...bcols(), { header: `Column ${bcols().length + 1}`, source: "reports" }] } } }, "Column added"));
+  click("#bcReset", () => save({ push: { balances: { columns: S.tv.defaults.push.balances.columns } } }, "Columns reset"));
   click("#tkChoose", async () => {
     const r = await closet.chooseSheet();
     if (r?.ok) { toast(r.pull?.ok ? `Workbook set. Read ${plural(r.pull.entries, "serving record")}.` : "Workbook set"); if (r.pull && !r.pull.ok) toast(r.pull.error, true); await load(); } else if (r?.error) toast(r.error, true);
@@ -1813,14 +1881,15 @@ function bindSettingsSheet() {
   click("#tkPush", async () => {
     const c = S.data.settings.tracker;
     const ok = await ask({
-      title: "Replace the conduct log in the workbook?",
-      message: `<p>Every row under the headings of <b>${esc(c.push.sheet)}</b> will be replaced with closet's records, then the sheet's formulas recalculate when it's opened.</p><p class="dim">${esc(c.path)}</p><p>A copy of the workbook as it is now is saved first. Close it in Excel before continuing.</p>`,
-      choices: [{ label: "Cancel", value: null }, { label: "Replace the rows", value: true, primary: true }], danger: true,
+      title: "Overwrite the workbook?",
+      message: `<p>closet will overwrite <b>${esc(c.push.sheet)}</b> with its records${c.push.served.enabled ? `, rewrite <b>${esc(c.served.sheet)}</b> from a fresh read of itself` : ""}${c.push.balances.enabled ? ` and rebuild <b>${esc(c.push.balances.sheet)}</b> with live formulas` : ""}. The sheet recalculates when it's opened.</p><p class="dim">${esc(c.path)}</p><p>A copy of the workbook as it is now is saved first. Close it in Excel before continuing.</p>`,
+      choices: [{ label: "Cancel", value: null }, { label: "Overwrite the workbook", value: true, primary: true }], danger: true,
     });
     if (!ok) return;
     try {
       const r = await api("/api/tracker/push", { method: "POST" });
-      toast(`Wrote ${plural(r.rows, "row")} to the workbook`);
+      toast(r.synced === false ? `Wrote ${plural(r.rows, "row")}. OneDrive is still syncing the file.` : `Wrote ${plural(r.rows, "row")} to the workbook`);
+      if (r.warnings?.length) await ask({ title: "Written, with a warning", message: r.warnings.map((w) => `<p>${esc(w)}</p>`).join(""), choices: [{ label: "OK", value: true, primary: true }] });
       const added = r.sheets.flatMap((s) => s.added);
       if (added.length) await ask({ title: "Columns were added", message: `<p>These headings weren't in the sheet, so closet added them on the right: ${esc(added.join(", "))}.</p>`, choices: [{ label: "OK", value: true, primary: true }] });
     } catch (e) {
@@ -2611,12 +2680,13 @@ function confirmPulled(items) {
     const sug = it.suggestion;
     const opts = [...it.candidates.map((c) => `<option value="id:${c.id}" ${sug.action === "replace" && sug.id === c.id ? "selected" : ""}>${esc(`${c.filename}  (${Math.round(c.score * 100)}% match)`)}</option>`),
       `<option value="new" ${sug.action === "new" ? "selected" : ""}>New paperwork (add it as a new form)</option>`, `<option value="ignore">Ignore this file</option>`].join("");
-    return `<tr data-i="${i}"><td><div class="who">${esc(it.filename)}</div><div class="sub">from ${esc(it.folder)}${it.error ? ` · <span style="color:#f0a3a3">${esc(it.error)}</span>` : ""}</div></td>
+    return `<tr data-i="${i}"><td><div class="who">${esc(it.filename)}</div><div class="sub">from ${esc(it.folder)}${it.error ? ` · <span style="color:#f0a3a3">${esc(it.error)}</span>` : ""}</div>${(it.warnings || []).map((w) => `<div class="sub" style="color:#f0a3a3"><span class="chip crit">${w.code === "unsigned" ? "No signature found" : "Couldn't read it"}</span> ${esc(w.text)}</div>`).join("")}</td>
       <td><select class="select" data-pick>${opts}</select><div class="sub why" data-why></div></td>
       <td style="text-align:center"><input class="chk" type="checkbox" data-rev aria-label="Needs further review: ${esc(it.filename)}" ${sug.action === "replace" && sug.review ? "checked" : ""}></td></tr>`;
   }).join("");
   return showModal(`<div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="mTitle">
     <h2 id="mTitle">Match returned paperwork</h2>
+    ${items.some((it) => it.warnings?.length) ? `<div class="banner">${icon("alert")}<span><b>${plural(items.filter((it) => it.warnings?.length).length, "file")} came back without the expected signature.</b> ${items.filter((it) => it.warnings?.length).length === 1 ? "It is" : "They are"} marked for Review below so you can check whether the signature is really there before anything is replaced.</span></div>` : ""}
     <div class="modal-msg"><p>${plural(items.length, "file")} came back since the last sync. Check which form each one is. A match goes in as an updated copy of that form, like <b>Upload updated copy</b>. Tick <b>Review</b> to look at one more closely in the Review tab first (it's held back from the next push until you decide).</p></div>
     <div class="table-wrap modal-table"><table class="t"><thead><tr><th>File</th><th>Belongs to</th><th>Review</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="modal-actions"><button type="button" class="btn ghost" data-x="cancel">Cancel sync</button><button type="button" class="btn primary" data-x="ok">${icon("check")}Confirm</button></div></div>`, (scrim, done) => {
@@ -2694,6 +2764,7 @@ async function runSync() {
     toast("Syncing…");
     const pulled = await api("/api/sync/pull", { method: "POST" });
     pulled.errors.forEach((e) => toast(e, true));
+    pulled.items.forEach((it) => (it.warnings || []).forEach((w) => toast(w.text, true)));
     let note = "";
     if (pulled.items.length) {
       const decisions = await confirmPulled(pulled.items);
@@ -2737,7 +2808,7 @@ async function renderSyncReview(token) {
     const opts = [...p.candidates.map((c) => [c.id, `${c.filename} (${Math.round(c.score * 100)}% match)`]), ...forms.map((f) => [f.id, f.filename])];
     pane.innerHTML = `<div class="review-card sync-compare">
       <header class="d-head"><div style="min-width:0"><h2>${esc(p.filename)}</h2><div class="fn">Came back in the ${esc(p.folder)} folder, ${esc(fmtStamp(p.pulled_at))}</div>
-        <div class="chips"><span class="chip warn">Check this match</span>${p.error ? `<span class="chip crit">${esc(p.error)}</span>` : ""}</div></div><div class="spacer"></div>
+        <div class="chips"><span class="chip warn">Check this match</span>${(p.warnings || []).map((w) => `<span class="chip crit" title="${esc(w.text)}">${w.code === "unsigned" ? "No signature found" : "Couldn't read it"}</span>`).join("")}${p.error ? `<span class="chip crit">${esc(p.error)}</span>` : ""}</div></div><div class="spacer"></div>
         <div class="acts"><span class="seg" role="group" aria-label="Zoom">${[1, 1.5, 2].map((v) => `<button type="button" data-z="${v}" aria-pressed="${v === z}">${v === 1 ? "Fit" : v * 100 + "%"}</button>`).join("")}</span>
         <button type="button" class="btn ghost small" data-wide title="Hide the queue so each page gets more room">${S.wide ? "Show list" : "Expand preview"}</button></div></header>
       <div class="cmp-pick"><label for="syncPick">This file belongs to</label><select class="select" id="syncPick">

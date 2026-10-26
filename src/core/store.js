@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { Notifier } from "./notify.js";
-import { TRACKER_DEFAULTS, Tracker, mergeTracker } from "./tracker.js";
+import { TRACKER_DEFAULTS, Tracker, mergeTracker, upgradeTracker } from "./tracker.js";
 import { ParserPool } from "./pool.js";
 import { quickDump } from "./quickdump.js";
 import * as R from "./records.js";
@@ -183,7 +183,7 @@ export class Store extends EventEmitter {
     for (const [k, v] of Object.entries(user)) {
       if (!(k in DEFAULT_SETTINGS)) continue;
       if (k === "tracker") {
-        try { s.tracker = mergeTracker(s.tracker, v); } catch { /* unusable saved values: back to the defaults */ }
+        try { s.tracker = mergeTracker(s.tracker, upgradeTracker(v)); } catch { /* unusable saved values: back to the defaults */ }
       } else if (v && typeof v === "object" && typeof s[k] === "object") Object.assign(s[k], v);
       else s[k] = v;
     }
@@ -406,7 +406,7 @@ export class Store extends EventEmitter {
     if (!m.sha1 && !Object.keys(m.overrides || {}).length) {
       for (const other of this.metas.values()) {
         if (other !== m && other.missing && other.sha1 === sha) {
-          for (const k of ["overrides", "reviewed", "reviewed_at", "logged", "logged_at", "archived", "archived_at", "notes", "history"]) {
+          for (const k of ["overrides", "reviewed", "reviewed_at", "logged", "logged_at", "archived", "archived_at", "rejected", "rejected_at", "notes", "history"]) {
             if (other[k] !== undefined) m[k] = clone(other[k]);
           }
           m.history = [...(m.history || []), { at: now(), what: `Renamed from ${other.filename}` }];
@@ -530,6 +530,7 @@ export class Store extends EventEmitter {
       reviewed: ["marked reviewed", "unmarked reviewed"],
       logged: ["marked logged to sheet", "unmarked logged to sheet"],
       archived: ["archived", "restored from archive"],
+      rejected: ["marked rejected", "rejection cleared"],
     };
     for (const [k, [on, off]] of Object.entries(words)) {
       if (k in patch && Boolean(patch[k]) !== Boolean(m[k])) {
@@ -638,7 +639,7 @@ export class Store extends EventEmitter {
     const out = [];
     let skipped = 0;
     for (const f of this.snapshot().forms) {
-      if (f.archived || f.missing || f.record?.[step] !== false || (ids && !ids.includes(f.id))) continue;
+      if (f.archived || f.rejected || f.missing || f.record?.[step] !== false || (ids && !ids.includes(f.id))) continue;
       const m = this.metas.get(f.id);
       const slots = m?.analysis?.slots || {};
       const at = slots[spec.initials];
@@ -808,9 +809,11 @@ export class Store extends EventEmitter {
       mode: m.analysis?.mode ?? null,
       page_count: m.analysis?.page_count ?? null,
       issues,
-      needs_review: flagged && !m.reviewed && !m.archived,
+      needs_review: flagged && !m.reviewed && !m.archived && !m.rejected,
       // a positive F10 without CDNA/Passes stays on the incomplete list until they're entered
-      incomplete: rec && !m.archived && !m.missing ? R.missingManual(rec) : [],
+      incomplete: rec && !m.archived && !m.rejected && !m.missing ? R.missingManual(rec) : [],
+      rejected: Boolean(m.rejected), // someone on the route turned it down: stays visible, leaves the process and every count
+      rejected_at: m.rejected_at ?? null,
       archived: Boolean(m.archived),
       archived_at: m.archived_at ?? null,
       flagged,

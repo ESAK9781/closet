@@ -23,6 +23,7 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { ensureLocal } from "./cloud.js";
 import { buildPacket, firstOpenStep, PACKET_NAME, PACKET_STEP } from "./quickdump.js";
 import * as R from "./records.js";
 import { writeJson } from "./store.js";
@@ -184,6 +185,7 @@ export class Sync {
       token: p.token, key: p.key, folder: LABELS[p.key], kind: p.kind, filename: p.filename, src: p.src,
       pulled_at: p.pulled_at, status: p.status, candidates: p.candidates, suggestion: p.suggestion, review_id: p.review_id ?? null,
       form_type: p.analysis?.form_type ?? null, mode: p.analysis?.mode ?? null, error: p.analysis?.error ?? null,
+      warnings: p.warnings || [],
     };
   }
 
@@ -267,6 +269,7 @@ export class Sync {
     const dir = path.join(this.stageDir, token);
     fs.mkdirSync(dir, { recursive: true });
     const staged = path.join(dir, name);
+    ensureLocal(src); // a OneDrive placeholder has no content here until it is downloaded
     fs.copyFileSync(src, staged);
     let analysis;
     try {
@@ -280,9 +283,29 @@ export class Sync {
       token, key, kind: key === "intake" ? "new" : "returned", filename: name, src, file_key: fileKey, size,
       sha1: sha1File(staged), staged, pulled_at: now(), status: "unconfirmed", analysis: slim(analysis),
     };
+    item.warnings = this.checkSigned(item);
     item.candidates = this.candidates(item);
     item.suggestion = this.suggest(item);
     return item;
+  }
+
+  /**
+   * A copy that came back from a step's returned folder should carry that step's signature. When it
+   * doesn't (or can't be read) the person is told and the copy goes to Review, in case the signature
+   * is there and just wasn't recognised.
+   */
+  checkSigned(item) {
+    if (item.kind !== "returned") return [];
+    const a = item.analysis || {};
+    const where = folderName(item.key, "pull");
+    if (a.error) return [{ code: "unreadable", text: `${item.filename} came back in the ${where} but closet couldn't read it, so it can't tell whether it was signed.` }];
+    const slots = flagSlots(a.form_type, this.store.settings)[item.key];
+    if (!slots?.length) return []; // that step has no signature on this kind of form
+    const signed = slots.some((k) => {
+      const s = a.slots?.[k];
+      return s?.filled || (s?.value !== undefined && s?.value !== null && !["", "False"].includes(R.collapse(s.value)));
+    });
+    return signed ? [] : [{ code: "unsigned", text: `The ${LABELS[item.key]} wasn't found in ${item.filename}, which came back in the ${where}. Check it in Review: it may be there but not recognised.` }];
   }
 
   candidates(item) {
@@ -322,7 +345,8 @@ export class Sync {
   /** The default choice in the confirm table. */
   suggest(item) {
     const [c1, c2] = item.candidates;
-    if (c1 && c1.score >= 0.7 && (!c2 || c1.score - c2.score >= 0.1)) return { action: "replace", id: c1.id, review: false };
+    const unsigned = Boolean(item.warnings?.length); // never applied without a look
+    if (c1 && c1.score >= 0.7 && (!c2 || c1.score - c2.score >= 0.1)) return { action: "replace", id: c1.id, review: unsigned };
     if (c1 && c1.score >= 0.4) return { action: "replace", id: c1.id, review: true };
     return { action: "new", id: null, review: false };
   }
@@ -392,7 +416,7 @@ export class Sync {
       for (const [k, l] of Object.entries(this.state.ledger)) if (!fs.existsSync(l.path)) delete this.state.ledger[k];
 
       const held = new Set(this.state.pending.filter((p) => p.status === "review" && p.review_id).map((p) => p.review_id));
-      const forms = this.store.snapshot().forms.filter((f) => !f.archived && !f.missing);
+      const forms = this.store.snapshot().forms.filter((f) => !f.archived && !f.rejected && !f.missing); // a rejected form is never sent on (and its old copies are cleared above)
       const packet = [];
       await Promise.all(forms.map(async (f) => {
         if (!f.parsed || f.pending) return void report.skipped++;

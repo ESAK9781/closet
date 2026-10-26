@@ -31,7 +31,7 @@ export async function quickDump(store, out, { packet: withPacket = false } = {})
     counts[key] = 0;
   }
   const dirOf = Object.fromEntries(folderNames);
-  const forms = store.snapshot().forms.filter((f) => !f.archived && !f.missing);
+  const forms = store.snapshot().forms.filter((f) => !f.archived && !f.rejected && !f.missing);
   for (const f of forms) {
     const src = store.pdfPath(f.id);
     if (!f.parsed || f.pending || !src) { skipped++; continue; }

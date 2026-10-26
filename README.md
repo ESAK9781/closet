@@ -59,6 +59,11 @@ no folder set is simply skipped. Pressing **Sync** on Paperwork:
 
 The combined AOC/AMT print packet is off by default; turn it on in the same settings section.
 
+**Missing signatures:** a file that comes back from a step's returned folder is checked for that
+step's signature. If it isn't there (or the file can't be read) you get a warning when the sync
+matches it, and it is pre-ticked for **Review** so it is held back and shown beside the form until you
+decide, in case the signature really is there but wasn't recognised.
+
 ### One-click steps
 
 On Paperwork, **SQ/CCF initials** and **Cadet CC initials** write the same initials into every form
@@ -120,6 +125,13 @@ folder you pick, for printing or routing a batch at once.
 Nothing breaks without an account: sending is disabled with the reason shown, and automatic
 updates can't be turned on.
 
+### Rejected forms
+
+If someone on the route turns a form down, open it and choose **Mark rejected**. It leaves the
+process: it isn't sent for signatures (quick dump, sync, bulk steps), gets no automatic emails, and
+counts toward nothing. It stays in the Paperwork list, marked **Rejected** (Filter → Progress →
+Rejected finds them), unlike archived forms, and **Undo rejection** puts it back.
+
 ### Naming paperwork
 
 Name PDFs `Recipient_PosOrNeg_FormType_Reason.pdf`, e.g. `John Doe_Neg_F10_Uniform Violation.pdf`.
@@ -180,18 +192,28 @@ tab shows the result.
   dropdown) and cadet balances that add themselves up. Only the serving log is read, and only
   completed discipline: a row needs a name, a tour or confinement, and an amount. It's read again
   whenever the file changes, and reading never alters it.
+- **What counts:** tours and confinements (and passes and CDNA) count only once a form is **fully
+  signed by everyone on the route** and not rejected. Until then they show as pending.
 - **Balances:** for every cadet, tours and confinements assigned, served and left (assigned minus
   served, never below zero). Names in the sheet are matched the way names are everywhere else
   ("Doe, John" = "John Doe", small typos tolerated); anyone with no paperwork is listed as *Not on file*.
+  **Only sanctions issued before…** (a date, or the *1 week ago* / *2 weeks ago* / 30 / 60 / 90 day
+  presets) limits the balance to fully signed forms dated before then, with everything served applied
+  to the oldest first, so what's left is what has gone unserved longest.
 - **Layout is settings:** the sheet name, header row, every column heading, and the words in the
-  type column. Defaults match the CS07 tracker. If the headings aren't on the header row, closet
+  type column. Defaults match the CS07 tracker. If the headings aren't on the header row closet
   looks for them near the top.
-- **Writing back (off by default):** turn on *Allow writing*, then **Write to workbook** replaces
-  every row of the conduct log with closet's records, one per recipient. You choose each column's
-  heading and what goes in it. A copy of the workbook is saved first (`metadata/sheet-backups`), the
-  serving log is never written, other columns and sheets are left alone, and the workbook must be
-  closed in Excel. Optionally it also fills in the cadet names on the balances sheet so the sheet's
-  own formulas can total them.
+- **Writing the workbook (off by default):** turn on *Allow writing*, then **Write to workbook**
+  overwrites everything: the conduct log with closet's records (one row per recipient, with a
+  Status column: Complete / In progress / Rejected), the serving log (read again first so nothing
+  typed since the last sync is lost; rows closet can't use are kept, names are respelled to match the
+  forms) and the balances sheet, which gets cadet names plus a live formula in every other column,
+  so counts update as served tours are typed in. closet never reads the balances sheet. Every
+  heading and what goes under it is a setting. A copy is saved first (`metadata/sheet-backups`) and
+  the workbook must be closed in Excel.
+- **OneDrive:** a workbook (or sync file) that exists only in the cloud is downloaded before
+  closet reads it, and after a write closet waits for OneDrive to release and pick up the file. If
+  OneDrive can't deliver the file you get a sentence about it, not a half-read file.
 - **In emails:** each cadet's email shows tours and confinements left to serve (with the served and
   assigned counts behind them). **Settings → Push notifications → What the emails say** switches the
   table, each of its columns, which forms are listed, the balances, the totals line and the footer.

@@ -318,6 +318,11 @@ export function buildRecord(meta, settings, roster) {
   const keys = [...RECORD_FIELDS, ...FLAG_KEYS];
   for (const k of keys) if (ov[k] !== undefined && ov[k] !== null) rec[k] = ov[k];
   rec.date_iso = rec.date ? parseDate(rec.date) : null;
+  // Tours, confinements, passes and CDNA only count once everyone on the route has signed, and never on a rejected form.
+  const flags = FLAG_KEYS.map((k) => rec[k]);
+  rec.complete = flags.some((v) => v === true) && flags.every((v) => v !== false);
+  rec.rejected = Boolean(meta.rejected);
+  rec.counted = rec.complete && !rec.rejected && !meta.archived;
   rec.recipient_list = recipientNames(meta, auto.recipients);
   rec.auto = auto;
   rec.overridden = keys.filter((k) => ov[k] !== undefined && ov[k] !== null).sort();

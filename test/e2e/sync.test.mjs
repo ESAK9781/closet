@@ -168,7 +168,10 @@ test("a signed copy comes back: the confirm table matches it by name and content
   assert.equal(rows.length, 2);
   const signed = rows.find((r) => r.file.includes("(signed)"));
   assert.match(signed.pick, /^John Doe_Neg_F10_Uniform Violation\.pdf/);
-  assert.equal(signed.rev, false, "confident match: not sent to review");
+  assert.equal(signed.rev, true, "no recipient signature in the copy: held for review even though the match is confident");
+  assert.match(await page.textContent(".modal"), /came back without the expected signature/);
+  assert.match(await page.textContent(".modal"), /Recipient signature wasn't found in John Doe_Neg_F10_Uniform Violation \(signed\)\.pdf/);
+  await page.uncheck(`tr[data-i="${rows.findIndex((r) => r.file.includes("(signed)"))}"] [data-rev]`); // the person looked: it's fine
   // send the second one to Review instead of applying it
   const idx = rows.findIndex((r) => r.file === "scan0099.pdf");
   await page.check(`tr[data-i="${idx}"] [data-rev]`);

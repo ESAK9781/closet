@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { openZip } from "./backup.js";
+import { ensureLocal } from "./cloud.js";
 import { nameParts } from "./people.js";
 import { collapse } from "./records.js";
 
@@ -88,6 +89,7 @@ export function readXlsx(file) {
 /** A spreadsheet file -> a list of sheets, each a list of rows of strings. */
 export function readSpreadsheet(file) {
   const ext = path.extname(file).toLowerCase();
+  ensureLocal(file);
   const st = fs.statSync(file);
   if (st.size > MAX_BYTES) throw new Error("That file is too large to be a contact list");
   if (ext === ".xlsx" || ext === ".xlsm") {

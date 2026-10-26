@@ -335,6 +335,7 @@ export class Notifier {
   outcomes(rec) {
     const parts = [];
     const add = (label, v) => { const t = R.collapse(v); if (t && t !== "0") parts.push(`${label}: ${t}`); };
+    if (rec.rejected) return ["Rejected: nothing from this form counts"];
     if (rec.pos_neg === "Pos") {
       add("CDNA", rec.cdna);
       add("Passes", rec.passes);
@@ -344,7 +345,8 @@ export class Notifier {
       add("Confinements", rec.confinements);
       if (R.collapse(rec.other)) parts.push(R.collapse(rec.other));
     }
-    return parts;
+    // tours, confinements, passes and CDNA only count once everyone has signed
+    return rec.counted || !parts.length ? parts : [`Pending until fully signed: ${parts.join("; ")}`];
   }
 
   /** key -> tours/confinements balance, worked out once per batch of emails. */
@@ -368,18 +370,18 @@ export class Notifier {
       return {
         date: fmtDate(r.date_iso, r.date), form: formName(r.form_type), pn: r.pos_neg === "Pos" ? "Positive" : r.pos_neg === "Neg" ? "Negative" : "",
         reason: [r.reason_category, r.reason_details].map(R.collapse).filter(Boolean),
-        pr: this.progress(r), outcomes: this.outcomes(r), positive: r.pos_neg === "Pos",
+        pr: r.rejected ? { steps: [], done: 0, next: "" } : this.progress(r), outcomes: this.outcomes(r), positive: r.pos_neg === "Pos", rejected: Boolean(r.rejected),
       };
     });
-    const rows = mapped.filter((r) => (ct.positives || !r.positive) && (!ct.only_open || r.pr.next));
-    const neg = all.filter((f) => f.record.pos_neg !== "Pos");
-    const sum = (k) => neg.reduce((a, f) => a + num(f.record[k]), 0);
-    const totals = { forms: all.length, pos: all.length - neg.length, neg: neg.length, demerits: sum("demerits"), tours: sum("tours"), confinements: sum("confinements") };
+    const rows = mapped.filter((r) => (ct.positives || !r.positive) && (!ct.only_open || (r.pr.next && !r.rejected)));
+    const neg = all.filter((f) => f.record.pos_neg !== "Pos" && !f.record.rejected);
+    const sum = (k, onlyCounted = false) => neg.reduce((a, f) => a + (onlyCounted && !f.record.counted ? 0 : num(f.record[k])), 0);
+    const totals = { forms: all.length, pos: all.length - neg.length, neg: neg.length, demerits: sum("demerits"), tours: sum("tours", true), confinements: sum("confinements", true) };
     const bal = ct.balances ? balances.get(person.key) || null : null;
     const today = fmtDate(new Date().toISOString().slice(0, 10));
     const sig = this.state.signature.enabled ? this.state.signature.text : "";
 
-    const status = (pr) => (pr.next ? `Waiting on: ${pr.next} (${pr.done} of ${pr.steps.length} steps done)` : `Fully processed (${pr.steps.length} of ${pr.steps.length} steps)`);
+    const status = (pr, rejected) => (rejected ? "Rejected: no further signatures needed" : pr.next ? `Waiting on: ${pr.next} (${pr.done} of ${pr.steps.length} steps done)` : `Fully processed (${pr.steps.length} of ${pr.steps.length} steps)`);
     const balanceLine = (label, b) => (ct.balance_detail ? `${label}: ${b.left} left to serve (${b.served} served of ${b.assigned} assigned)` : `${label}: ${b.left} left to serve`);
     const totalsLine = `Totals: ${totals.forms} form${totals.forms === 1 ? "" : "s"} (${totals.neg} negative, ${totals.pos} positive); ${totals.demerits} demerits, ${totals.tours} tours, ${totals.confinements} confinements.`;
     const empty = ct.only_open ? "Nothing is waiting on a step right now." : "No paperwork to list.";
@@ -391,7 +393,7 @@ export class Notifier {
         ...(rows.length ? rows.flatMap((r) => [
           `* ${[ct.date && r.date, ct.form && `${r.form}${r.pn ? `, ${r.pn}` : ""}`, ct.reason && r.reason[0]].filter(Boolean).join(" - ") || "Form"}`,
           ...(ct.details && r.reason[1] ? [`    ${r.reason[1]}`] : []),
-          ...(ct.status ? [`    ${status(r.pr)}`] : []),
+          ...(ct.status ? [`    ${status(r.pr, r.rejected)}`] : []),
           ...(ct.steps ? [`    ${r.pr.steps.map((s) => `${s.done ? "[x]" : "[ ]"} ${s.label}`).join("  ")}`] : []),
           ...(ct.outcomes ? [`    Rewards / sanctions: ${r.outcomes.join("; ") || "none recorded"}`] : []), "",
         ]) : [empty, ""]),
@@ -408,7 +410,7 @@ export class Notifier {
       ct.date && ["Date", (r) => `<td style="${td};white-space:nowrap">${esc(r.date)}</td>`],
       ct.form && ["Form", (r) => `<td style="${td}">${esc(r.form)}${r.pn ? `<br><span style="color:${r.pn === "Positive" ? "#1f7a4d" : "#b3402f"}">${esc(r.pn)}</span>` : ""}</td>`],
       (ct.reason || ct.details) && ["Reason", (r) => `<td style="${td}">${ct.reason ? esc(r.reason[0] || "") : ""}${ct.details && r.reason[1] ? `<div style="color:#5b6376;margin-top:${ct.reason ? 3 : 0}px">${esc(r.reason[1])}</div>` : ""}</td>`],
-      (ct.status || ct.steps) && ["Where it is", (r) => `<td style="${td}">${ct.status ? `<b>${esc(status(r.pr))}</b>` : ""}${ct.steps ? `<div style="margin-top:${ct.status ? 4 : 0}px;color:#5b6376;line-height:1.5">${r.pr.steps.map((s) => `${s.done ? "&#10003;" : "&#9675;"} ${esc(s.label)}`).join("<br>")}</div>` : ""}</td>`],
+      (ct.status || ct.steps) && ["Where it is", (r) => `<td style="${td}">${ct.status ? `<b>${esc(status(r.pr, r.rejected))}</b>` : ""}${ct.steps ? `<div style="margin-top:${ct.status ? 4 : 0}px;color:#5b6376;line-height:1.5">${r.pr.steps.map((s) => `${s.done ? "&#10003;" : "&#9675;"} ${esc(s.label)}`).join("<br>")}</div>` : ""}</td>`],
       ct.outcomes && ["Rewards / sanctions", (r) => `<td style="${td}">${r.outcomes.length ? r.outcomes.map(esc).join("<br>") : '<span style="color:#8b93a5">None recorded</span>'}</td>`],
     ].filter(Boolean);
     const balCell = (label, b) => `<td style="padding:8px 14px;border:1px solid #d5d9e2;font-size:13px;vertical-align:top"><b>${esc(label)}</b><div style="font-size:20px;font-weight:600;color:${b.left ? "#b3402f" : "#1f7a4d"};margin:2px 0">${b.left} left to serve</div>${ct.balance_detail ? `<div style="color:#5b6376">${b.served} served of ${b.assigned} assigned</div>` : ""}</td>`;
@@ -549,7 +551,7 @@ export class Notifier {
   /** Remember where every form stands now, without announcing anything. */
   rebaseline(snap = this.store.snapshot()) {
     const forms = {};
-    for (const f of snap.forms) if (f.parsed && !f.pending && !f.missing && !f.archived) forms[f.id] = this.flagsOf(f);
+    for (const f of snap.forms) if (f.parsed && !f.pending && !f.missing && !f.archived && !f.rejected) forms[f.id] = this.flagsOf(f);
     this.state.seen = { parser: this.parserVersion, forms };
   }
 
@@ -571,7 +573,7 @@ export class Notifier {
     const events = [];
     const next = {};
     for (const f of snap.forms) {
-      if (!f.parsed || f.missing || f.archived) continue;
+      if (!f.parsed || f.missing || f.archived || f.rejected) continue; // a rejected form is out of the process: nothing to announce, and un-rejecting re-baselines it quietly
       const cur = this.flagsOf(f);
       next[f.id] = cur;
       const prev = this.state.seen.forms[f.id];
