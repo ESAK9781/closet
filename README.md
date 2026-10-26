@@ -207,7 +207,7 @@ tab shows the result.
   overwrites everything: the conduct log with closet's records (one row per recipient, with a
   Status column: Complete / In progress / Rejected), the serving log (read again first so nothing
   typed since the last sync is lost; rows closet can't use are kept, names are respelled to match the
-  forms) and the balances sheet, which gets cadet names plus a live formula in every other column,
+  forms) and the balances sheet, which gets cadet names, class year, report counts and assigned tours/confinements as plain values (worked out by closet, counting only fully signed forms), with formulas only for served tours/confinements and what's left and the status that follow from them,
   so counts update as served tours are typed in. closet never reads the balances sheet. Every
   heading and what goes under it is a setting. A copy is saved first (`metadata/sheet-backups`) and
   the workbook must be closed in Excel.

@@ -78,7 +78,8 @@ test("a new workbook matches the default layout, with formulas that add the bala
   assert.equal(served.rows.get(2)[1], "Cadet Disciplinary Serving Log");
   assert.equal(sheet("Cadet Balances").rows.get(9)[10], "Status");
   const f = xmlOf("xl/worksheets/sheet3.xml");
-  assert.match(f, /SUMIFS\('Conduct Log'!\$M:\$M,'Conduct Log'!\$G:\$G,\$B10,'Conduct Log'!\$P:\$P,"Complete"\)/, "only fully signed forms are assigned");
+  const cadetRows = f.slice(f.indexOf('<row r="10"')); // the cadet rows (the totals above them are the template's own)
+  assert.ok(!/Conduct Log/.test(cadetRows) && !/INDEX\(|COUNTIF\(/.test(cadetRows), "only what's served is a formula: class year, reports and assigned counts are values closet writes");
   assert.match(f, /SUMIFS\('Served Log'!\$E:\$E,'Served Log'!\$C:\$C,\$B10,'Served Log'!\$D:\$D,"\*Tour\*"\)/);
 });
 
@@ -226,7 +227,11 @@ test("push writes the whole workbook: conduct log, serving log and balances with
   const brow = [...bs.rows.entries()].find(([n, row]) => n > 9 && row[1] === "John A Doe")[1];
   assert.deepEqual(brow.slice(4, 11), ["2", "2", "0", "1", "2", "0", "Clear"], "tours assigned, served, left, then confinements");
   const f = xmlOf("xl/worksheets/sheet3.xml");
-  assert.match(f, /<f>IF\(\$B10="","",SUMIFS\('Conduct Log'!\$M:\$M/);
+  const cadetRows = f.slice(f.indexOf('<row r="10"')); // the cadet rows (the totals above them are the template's own)
+  assert.ok(!/Conduct Log/.test(cadetRows) && !/INDEX\(|COUNTIF\(/.test(cadetRows), "nothing but served counts (and what follows from them) is a formula");
+  assert.match(f, /<f>IF\(\$B10="","",SUMIFS\('Served Log'!\$E:\$E,'Served Log'!\$C:\$C,\$B10,'Served Log'!\$D:\$D,"\*Tour\*"\)\)<\/f>/);
+  assert.ok(!/<c r="E10"[^>]*><f>/.test(f), "tours assigned is a plain number");
+  assert.ok(!/<c r="C10"[^>]*><f>/.test(f), "class year is a plain value");
   assert.match(f, /<f>IF\(\$B10="","",MAX\(0,E10-F10\)\)<\/f>/);
   assert.match(f, /<f>IF\(\$B10="","",IF\(G10\+J10>0,"Outstanding Balance","Clear"\)\)<\/f>/);
   assert.match(f, /IF\(\$B100="","",/, "formulas wait below the last name for the next cadet");

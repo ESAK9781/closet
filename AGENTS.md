@@ -105,7 +105,7 @@ instead of the renderer polling; `load()` in `app.js` re-fetches the whole snaps
 - The user's real tracker contains names: tests build workbooks with `createTemplate`/`patchWorkbook`; never commit a real one.
 - `record.counted` (= fully signed on every applicable routing flag, not rejected, not archived) is the only thing that makes tours, confinements, passes or CDNA count: balances, overview/cadet totals, email totals and the sheet's formulas (via the conduct log's Status column) all follow it. **Rejected** (`meta.rejected`) is a form status like archived but stays visible; it must be excluded from anything that sends a form onward (quickdump, sync push, bulk steps, automatic emails).
 - Anything read from or written to a folder the user owns may be a OneDrive placeholder: go through `cloud.js` (`ensureLocal` before reading, `settle` after writing).
-- Push overwrites all three sheets; the serving log is re-read first and written back verbatim (`state.raw`), and the balances sheet is names + formulas only, never read back.
+- Push overwrites all three sheets; the serving log is re-read first and written back verbatim (`state.raw`), and the balances sheet is plain values from closet (class year, reports, assigned) plus formulas only for served counts and what follows from them (left, status); never read back.
 - Balance = assigned (from forms) - served (from the sheet), floored at 0, per name key. Email content (`notify.content`) is plain on/off switches; keep `compose()` honoring them.
 
 ## Email

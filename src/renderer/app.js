@@ -1780,7 +1780,7 @@ ${inner}</div></details>`;
         <span class="spacer"></span>
         <span class="bar-status">${status || '<span class="dim">No workbook set</span>'}${tv.push.last ? ` <span class="dim">· written ${esc(when(tv.push.last.at))}, ${plural(tv.push.last.rows, "row")}</span>` : ""}</span>
       </div>
-      <p class="hint" style="margin:10px 0 0">Reading never changes the workbook. Writing overwrites the conduct log with closet's records, the serving log (read again first, so nothing entered since the last sync is lost) and the balances sheet (names plus live formulas), after saving a copy to metadata/sheet-backups. Close the workbook in Excel first; in OneDrive it is downloaded before reading and left to sync after writing.</p>
+      <p class="hint" style="margin:10px 0 0">Reading never changes the workbook. Writing overwrites the conduct log with closet's records, the serving log (read again first, so nothing entered since the last sync is lost) and the balances sheet (values from closet, with formulas only for what's served), after saving a copy to metadata/sheet-backups. Close the workbook in Excel first; in OneDrive it is downloaded before reading and left to sync after writing.</p>
     </div></section>
 
     <section class="panel"><div class="panel-head"><h2>Discipline workbook</h2><span class="sub">where served tours and confinements are tracked</span></div><div class="panel-body">
@@ -1812,9 +1812,9 @@ ${inner}</div></details>`;
       <div class="pair" style="margin:10px 0 18px"><button class="btn small" type="button" id="pcAdd">Add a column</button><button class="btn small ghost" type="button" id="pcReset">Back to the defaults</button></div>
       <p class="hint">Each line is a column in the workbook: its heading, and what closet writes under it. A heading the sheet doesn't have yet is added to the right. Columns are found by heading, so their order doesn't matter.</p>`)}
 
-    ${fold("balances", "Serving log and balances sheet when writing", "which sheets are rewritten, and the balance formulas", `
+    ${fold("balances", "Serving log and balances sheet when writing", "which sheets are rewritten, and the balance columns", `
       ${setRow("Rewrite the serving log", "Writes the rows back exactly as read (rows closet couldn't use stay too), with each cadet's name spelled the way it is on the forms, so the balance formulas find them. Turn off to leave the serving log alone.", sw("push.served.enabled", p.served.enabled, "Rewrite the serving log"))}
-      ${setRow("Write the balances sheet", "Cadet names with a formula in every other column. Tours and confinements count only on forms whose Status column says Complete. closet never reads this sheet back.", sw("push.balances.enabled", p.balances.enabled, "Write the balances sheet"))}
+      ${setRow("Write the balances sheet", "Cadet names, class year, report counts and assigned tours and confinements are written as plain values (only fully signed forms count). Formulas are used only for served tours and confinements, and for what's left and the status that follow from them, so those update as served records are typed in. closet never reads this sheet back.", sw("push.balances.enabled", p.balances.enabled, "Write the balances sheet"))}
       ${p.balances.enabled ? `${setRow("Balances sheet", "The sheet and the row its headings are on.", `<div class="pair">${txt("push.balances.sheet", p.balances.sheet, 'aria-label="Balances sheet"')}${txt("push.balances.header_row", p.balances.header_row, 'type="number" min="1" max="1000" aria-label="Balances header row" style="max-width:90px"')}</div>`)}
       <div class="table-wrap"><table class="t"><thead><tr><th>Heading in the sheet</th><th>Formula shows</th><th></th></tr></thead><tbody>
         ${p.balances.columns.map((col, i) => `<tr><td><input class="input cell" data-bc="${i}|header" value="${esc(col.header)}" aria-label="Balances heading ${i + 1}"></td>
@@ -1882,7 +1882,7 @@ function bindSettingsSheet() {
     const c = S.data.settings.tracker;
     const ok = await ask({
       title: "Overwrite the workbook?",
-      message: `<p>closet will overwrite <b>${esc(c.push.sheet)}</b> with its records${c.push.served.enabled ? `, rewrite <b>${esc(c.served.sheet)}</b> from a fresh read of itself` : ""}${c.push.balances.enabled ? ` and rebuild <b>${esc(c.push.balances.sheet)}</b> with live formulas` : ""}. The sheet recalculates when it's opened.</p><p class="dim">${esc(c.path)}</p><p>A copy of the workbook as it is now is saved first. Close it in Excel before continuing.</p>`,
+      message: `<p>closet will overwrite <b>${esc(c.push.sheet)}</b> with its records${c.push.served.enabled ? `, rewrite <b>${esc(c.served.sheet)}</b> from a fresh read of itself` : ""}${c.push.balances.enabled ? ` and rebuild <b>${esc(c.push.balances.sheet)}</b> (served counts stay formulas)` : ""}. The sheet recalculates when it's opened.</p><p class="dim">${esc(c.path)}</p><p>A copy of the workbook as it is now is saved first. Close it in Excel before continuing.</p>`,
       choices: [{ label: "Cancel", value: null }, { label: "Overwrite the workbook", value: true, primary: true }], danger: true,
     });
     if (!ok) return;

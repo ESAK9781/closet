@@ -169,21 +169,15 @@ const quote = (name) => `'${name.replace(/'/g, "''")}'`;
 const wordIn = (w) => w.replace(/"/g, '""');
 
 /**
- * The Excel formula for one cell of a balances row, or null when the workbook lacks a column it
- * needs. X says where things are: X.name (this sheet's name column letter), X.col(source) (this
- * sheet's other columns), X.cond(source) / X.srv(field) (whole-column ranges on the conduct and
- * serving logs), and the words in the type column.
+ * The Excel formula for one cell of a balances row, or null when that cell is a plain value (or the
+ * workbook lacks a column the formula needs). Only what's served is a formula, because that is what
+ * people type into the serving log between syncs; what's left and the status follow from it.
+ * X says where things are: X.name (this sheet's name column letter), X.col(source) (this sheet's
+ * other columns), X.srv(field) (whole-column ranges on the serving log), and the words in the type column.
  */
 function balanceFormula(source, r, X) {
   const me = `$${X.name}${r}`;
   const g = (body) => `IF(${me}="","",${body})`;
-  const rec = X.cond("recipient");
-  const assigned = (field) => {
-    const f = X.cond(field);
-    if (!rec || !f) return null;
-    const st = X.cond("status");
-    return g(st ? `SUMIFS(${f},${rec},${me},${st},"${DONE}")` : `SUMIF(${rec},${me},${f})`); // only fully signed forms count
-  };
   const served = (word) => {
     const [amt, cad, typ] = [X.srv("amount"), X.srv("cadet"), X.srv("type")];
     return amt && cad && typ ? g(`SUMIFS(${amt},${cad},${me},${typ},"*${wordIn(word)}*")`) : null;
@@ -192,11 +186,7 @@ function balanceFormula(source, r, X) {
     const [ca, cs] = [X.col(a), X.col(s)];
     return ca && cs ? g(`MAX(0,${ca}${r}-${cs}${r})`) : null;
   };
-  switch (source) {
-    case "class_year": return rec && X.cond("class_year") ? g(`IFERROR(INDEX(${X.cond("class_year")},MATCH(${me},${rec},0)),"")`) : null;
-    case "reports": return rec ? g(`COUNTIF(${rec},${me})`) : null;
-    case "tours_assigned": return assigned("tours");
-    case "conf_assigned": return assigned("confinements");
+  switch (source) { // class year, report counts and what was assigned are values closet writes; only what is served is typed into the sheet
     case "tours_served": return served(X.tourWord);
     case "conf_served": return served(X.confWord);
     case "tours_left": return net("tours_assigned", "tours_served");
@@ -478,7 +468,6 @@ export class Tracker {
       const people = bal.list;
       const total = Math.max(people.length, BAL_ROWS);
       const nameCol = b.columns.find((x) => x.source === "name");
-      if (!conduct.columns.length || !p.columns.some((x) => x.source === "status")) warnings.push(`The conduct log has no Status column, so tours and confinements on forms that aren't fully signed yet will be counted by the balances sheet.`);
       const cached = (src, person) => {
         const [t, f] = [person.tours, person.confinements];
         return { name: person.name, class_year: person.class_year, reports: reportsBy.get(person.name) || 0, tours_assigned: t.assigned, tours_served: t.served, tours_left: t.left, conf_assigned: f.assigned, conf_served: f.served, conf_left: f.left, status: t.left + f.left > 0 ? "Outstanding Balance" : "Clear" }[src];
@@ -499,8 +488,8 @@ export class Tracker {
               const person = people[i];
               if (col.source === "name") return person ? person.name : null;
               const f = X.name ? balanceFormula(col.source, b.header_row + 1 + i, X) : null;
-              if (!f) return null;
               const v = person ? cached(col.source, person) : "";
+              if (!f) return v === "" || v === undefined ? null : v; // closet's own numbers, written as plain values
               return { f, v: v === "" || v === undefined ? "" : v };
             });
           },
