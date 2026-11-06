@@ -326,19 +326,20 @@ test("the email says what's served and what's left, what's pending, and what it 
   const person = people.get(john.key);
   const mail = (opts = {}) => store.notify.compose(person, "Hello", { balances: store.notify.balanceMap(snap), ...opts });
   const c = mail();
-  assert.match(c.text, /Tours: 0 left to serve \(2 served of 2 assigned\)/);
-  assert.match(c.html, /left to serve/);
-  assert.match(c.text, /Totals: .* 2 tours, 1 confinements/, "the totals count the signed form");
+  assert.match(c.text, /Tours: none left to serve \(all 2 served\)/);
+  assert.match(c.html, /none left to serve/);
+  assert.match(c.text, /Totals: .*2 tours, 1 confinement\./, "the totals count the signed form");
+  assert.ok(!/ 0 (tours|confinements|demerits)|0 left|0 served/.test(c.text), "no zero counts for things the cadet doesn't have");
 
   // a form still in the process shows what it will add, but doesn't count yet
   store.updateForm(form("John Doe_Neg_F10").id, { overrides: { recipient_signed: false } });
   const pending = store.notify.compose(store.notify.people(store.snapshot()).get(john.key), "Hello", { balances: new Map() });
   assert.match(pending.text, /Pending until fully signed: .*Tours: 2/);
-  assert.match(pending.text, /0 tours, 0 confinements/);
+  assert.ok(!/\b0 (tours|confinements)/.test(pending.text), "nothing counted yet, so nothing is claimed");
   store.updateForm(form("John Doe_Neg_F10").id, { overrides: { recipient_signed: true } });
 
   store.notify.setContent({ balance_detail: false });
-  assert.match(mail().text, /Tours: 0 left to serve\n/);
+  assert.match(mail().text, /Tours: none left to serve\n/);
   store.notify.setContent({ balances: false, totals: false, footer: false, details: false, steps: false });
   const t = mail().text;
   assert.ok(!/Tours and confinements/.test(t) && !/Totals:/.test(t) && !/Sent by/.test(t) && !/\[[x ]\]/.test(t));
@@ -354,15 +355,15 @@ test("the email says what's served and what's left, what's pending, and what it 
   store.notify.addContact({ name: john.name, email: "cadet@example.com", cadet: john.name }, snap);
   const sent = await store.notify.send({ keys: [john.key], subject: "Hi", message: "Hello {first_name}" }, snap);
   assert.equal(sent.sent, 1);
-  assert.match(outbox.at(-1).text, /left to serve/);
+  assert.match(outbox.at(-1).text, /none left to serve/);
 });
 
 test("a rejected form is out of the process: not sent on, not announced, still listed", async () => {
   const maria = form("Maria Garcia");
   assert.equal(maria.rejected, true);
   const email = store.notify.compose(store.notify.people(store.snapshot()).get(store.tracker.balances().list.find((p) => p.name === "Maria L Garcia").key), "Hello");
-  assert.match(email.text, /Rejected: no further signatures needed/);
-  assert.match(email.text, /Rejected: nothing from this form counts/);
+  assert.match(email.text, /Rejected, so nothing from this form counts/);
+  assert.match(email.text, /Rejected, so nothing from this form counts/);
   assert.equal(store.bulkPlan("cadet_cc_initialed").forms.some((f) => f.id === maria.id), false, "bulk steps skip it");
   assert.equal(maria.incomplete.length, 0);
 });

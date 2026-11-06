@@ -8,6 +8,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 
 import { extractContacts, parseDelimited, readSpreadsheet } from "../src/core/contacts.js";
+import { inScope } from "../src/core/notify.js";
 import { bestMatch, displayName, nameDistance } from "../src/core/people.js";
 import { Store } from "../src/core/store.js";
 import { makeSamples } from "../tools/make-samples.mjs";
@@ -17,12 +18,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let tmp;
 let store;
 let gmail = null; // what the fake mailer reports; null = nothing connected
+let drafts = false; // Outlook in drafts mode: mail is saved, not sent
 const outbox = [];
 const dir = (...p) => path.join(tmp, ...p);
 const snap = () => store.snapshot();
 
 const mailer = {
-  status: () => (gmail ? { configured: true, user: gmail, from_name: "", secure: true } : { configured: false, reason: "No Gmail account is connected yet." }),
+  status: () => (gmail ? { configured: true, user: gmail, from_name: "", secure: true, drafts, pace: 0 } : { configured: false, reason: "No Gmail account is connected yet." }),
   send: async (m) => {
     if (m.to.some((a) => a.startsWith("bounce@"))) throw new Error("Gmail refused an address");
     outbox.push(m);
@@ -54,6 +56,18 @@ test("one person in many formats", () => {
   const m = bestMatch("Smith, Jane", ["John Smith", "Jane Smyth", "Amy Wu"]);
   assert.equal(m.name, "Jane Smyth");
   assert.equal(bestMatch("Smith, Jane", ["John Smith", "Jane Smyth"], { distinct: (a, b) => b === "Jane Smyth" }), null, "pairs the user ruled different are skipped");
+});
+
+test("{first_name}, {last_name} and {name} fill in whatever way a name was written", () => {
+  const n = store.notify;
+  const fill = (name) => n.personalise("Dear {first_name} / {last_name} / {name} / {LastName}", { name });
+  assert.equal(fill("John A. Doe"), "Dear John / Doe / John A. Doe / Doe");
+  assert.equal(fill("Doe, John A."), "Dear John / Doe / Doe, John A. / Doe");
+  assert.equal(fill("C2C Doe, John"), "Dear John / Doe / C2C Doe, John / Doe");
+  assert.equal(fill("John Doe Jr."), "Dear John / Doe / John Doe Jr. / Doe", "a suffix is not the last name");
+  assert.equal(fill("Mary O'Brien-Smith"), "Dear Mary / O'Brien-Smith / Mary O'Brien-Smith / O'Brien-Smith");
+  assert.equal(fill("DOE, JOHN"), "Dear John / Doe / DOE, JOHN / Doe", "capitals are softened");
+  assert.equal(n.personalise("Hi {last_name}", { name: "Cher" }), "Hi Cher", "a one-word name is its own last name");
 });
 
 test("spreadsheets: emails found by regex, names from the cells to the left", () => {
@@ -142,7 +156,8 @@ test("the summary email: custom text first, then every form with its stage and s
   assert.ok(pv.text.startsWith(`Hi ${first} <b>bold</b>`), "custom text leads");
   assert.ok(pv.html.includes("&lt;b&gt;bold&lt;/b&gt;"), "typed markup is escaped, not rendered");
   assert.ok(!pv.html.includes("<b>bold</b>"));
-  assert.match(pv.html, /Rewards \/ sanctions/);
+  assert.match(pv.html, /<b>Waiting on: /, "what the reader must act on is bold");
+  assert.ok(!/Rewards \/ sanctions/.test(pv.html) || /Rewards \/ sanctions/.test(pv.text), "the rewards column only appears when someone has something");
   assert.match(pv.text, /Waiting on:|Fully processed/);
   assert.equal((pv.html.match(/<tbody>[\s\S]*?<\/tbody>/)[0].match(/<tr>/g) || []).length, p.forms.length, "one row per form");
   assert.ok(p.forms.every((f) => !f.archived));
@@ -170,6 +185,101 @@ test("sending: only people with an email, one failure doesn't stop the rest, eve
   assert.equal(t.sent, 1);
   assert.deepEqual(outbox.at(-1).to, [gmail], "a test goes to the sender, not the cadet");
   assert.match(outbox.at(-1).subject, /^\[TEST/);
+});
+
+test("Outlook drafts mode: manual sends are reported as drafted, automatic updates refuse to run", async () => {
+  const n = store.notify;
+  gmail = "first.sergeant@example.mil";
+  drafts = true;
+  try {
+    const p = [...n.people(snap()).values()].find((x) => n.contactsFor(x.key).length);
+    const r = await n.send({ keys: [p.key], subject: "Update", message: "Hello" }, snap());
+    assert.equal(r.sent, 1);
+    assert.equal(r.drafted, true);
+    assert.equal(n.state.log.at(-1).drafted, true);
+    assert.throws(() => n.setAuto({ enabled: true }), /drafts/);
+    drafts = false;
+    const r2 = await n.send({ keys: [p.key], subject: "Update", message: "Hello" }, snap());
+    assert.equal(r2.drafted, false);
+    assert.equal(n.state.log.at(-1).drafted, undefined);
+  } finally {
+    drafts = false;
+  }
+});
+
+test("final Form 10 copies: attached only when on, only fully signed, and the email carries no colour or icons", async () => {
+  const n = store.notify;
+  const ALL = { sqccf_processed: true, cadet_cc_initialed: true, recipient_signed: true, aoc_signed: true };
+  const first = [...n.people(snap()).values()].find((x) => n.contactsFor(x.key).length && x.forms.some((f) => f.record.form_type === "F10"));
+  assert.ok(first, "a sample cadet with an email and a Form 10");
+  const target = first.forms.find((f) => f.record.form_type === "F10");
+  store.updateForm(target.id, { overrides: ALL });
+  const person = n.people(snap()).get(first.key);
+  assert.equal(n.finalCopies(person).files.length, 0, "off by default");
+  n.setContent({ attach_final: true });
+  try {
+    const { files } = n.finalCopies(person);
+    const expected = person.forms.filter((f) => f.record.form_type === "F10" && f.record.counted);
+    assert.equal(files.length, expected.length);
+    assert.ok(files.every((f) => fs.existsSync(f.path) && /\.pdf$/i.test(f.filename)));
+    const open = person.forms.find((f) => f.record.form_type === "F10" && !f.record.counted);
+    if (open) assert.ok(!files.some((f) => f.filename === open.filename), "an unsigned form is never attached");
+    const pv = n.preview({ key: person.key, subject: "s", message: "m" }, snap());
+    assert.equal(pv.attachments.length, files.length);
+    assert.match(pv.text, /Attached: the final signed copy/);
+    assert.doesNotMatch(pv.html, /#[0-9a-f]{6}.*background|background:#|letter-spacing|text-transform|&#10003;/i, "no fills, icons or decorative type");
+    gmail = "first.sergeant@example.mil";
+    outbox.length = 0;
+    await n.send({ keys: [person.key], subject: "s", message: "m" }, snap());
+    assert.equal(outbox.at(-1).attachments.length, files.length, "the files travel with the message");
+  } finally {
+    n.setContent({ attach_final: false });
+    store.updateForm(target.id, { overrides: Object.fromEntries(Object.keys(ALL).map((k) => [k, null])) });
+  }
+});
+
+test("the wizard: the message is remembered, scope picks the forms, and progress is reported", async () => {
+  const n = store.notify;
+  gmail = "first.sergeant@example.mil";
+  n.setDraft({ subject: "Monthly update", message: "Hi {first_name}", scopes: ["negative", "rejected"], content: { totals: false } });
+  const back = n.load().manual;
+  assert.equal(back.subject, "Monthly update");
+  assert.equal(back.message, "Hi {first_name}");
+  assert.deepEqual(back.scopes, ["negative", "rejected"], "several kinds at once");
+  assert.equal(back.content.totals, false, "saved to disk, so it survives a restart");
+  assert.throws(() => n.setDraft({ scopes: ["negative", "nonsense"] }), /Unknown kind/);
+  assert.throws(() => n.setDraft({ content: { nope: true } }), /Unknown/);
+  assert.throws(() => n.setDraft({ content: { forms: true, date: false, form: false, reason: false, details: false, status: false, steps: false, outcomes: false } }), /at least one column/);
+
+  const v = n.view(snap());
+  assert.ok(v.scopes.length === 6 && v.manual.scopes.length === 2);
+  const p = v.people[0];
+  for (const k of v.scopes.map((x) => x.key)) assert.ok(Number.isInteger(p.rel[k]) && p.out[k] <= p.rel[k], k);
+  assert.equal(p.rel.all, p.forms);
+  assert.equal(p.fl.length, p.forms, "one entry per form, with the kinds it belongs to");
+  assert.ok(p.fl.every((f) => f.in.includes("all")));
+  assert.ok(v.people.some((x) => x.rel.positive === 0), "someone has no positive paperwork, so a positive notice would leave them out");
+
+  // the forms listed follow the scope; a person with nothing in it still gets an email (the wizard's "one person")
+  const people = [...n.people(snap()).values()].filter((x) => n.contactsFor(x.key).length);
+  const none = people.find((x) => !x.forms.some((f) => f.record.rejected));
+  assert.ok(none);
+  outbox.length = 0;
+  const r = await n.send({ keys: [none.key], subject: "s", message: "m", scope: "rejected", content: { attach_final: false } }, snap());
+  assert.equal(r.sent, 1);
+  assert.match(outbox.at(-1).text, /No paperwork matches this update/);
+  // several kinds at once: a form is listed if it fits any of them
+  const everyone = [...n.people(snap()).values()];
+  const person = everyone.find((x) => x.forms.length > 1) || everyone[0];
+  const rows = (scope) => (n.preview({ key: person.key, subject: "s", message: "m", scope }, snap()).html.match(/<tr>/g) || []).length - 1; // minus the header row
+  const kinds = ["negative", "positive", "rejected"];
+  const per = kinds.map((k) => person.forms.filter((f) => inScope(f.record, k)).length);
+  assert.equal(rows(kinds), per.reduce((a, b) => a + b, 0), "the kinds are exclusive of each other, so the lists add up");
+  assert.equal(rows(["all", "rejected"]), person.forms.length, "Everything plus another kind is still just everything");
+  assert.equal(n.sendProgress.running, false);
+  assert.equal(n.sendProgress.done, n.sendProgress.total);
+  assert.throws(() => n.send({ keys: [none.key], subject: "s", message: "m", scope: "bogus" }, snap()), /Unknown kind/);
+  assert.throws(() => n.send({ keys: [none.key], subject: "s", message: "m", scope: "all", content: { nope: true } }, snap()), /Unknown/);
 });
 
 test("automatic updates: off for everyone, baseline on enabling, only opted-in people, only chosen steps", async () => {

@@ -85,7 +85,8 @@ const S = {
   balQ: "", balF: "owing", balBefore: "", // Balances: search, filter, and "only sanctions issued before"
   nv: null,          // notifications data (contacts, people, log), fetched when a notifications screen is open
   cQ: "", cFilter: "all", cSel: new Set(), importReport: null, // contact list in Settings
-  nSel: new Set(), nSubject: "Conduct paperwork update", nMessage: "", nQ: "", nClass: "all", nFilter: "all", sending: false, // Notifications tab
+  nTab: "send",      // Notifications sub-tab: the send wizard, or what was recently sent
+  nw: null,          // Notifications wizard: step, how people are chosen, who, progress (made on first open)
 };
 
 const blankEdit = () => ({ overrides: {}, fields: {}, notes: undefined, logged: undefined });
@@ -366,6 +367,7 @@ async function route() {
   const valid = ["overview", "paperwork", "review", "cadets", "balances", "export", "notifications", "archive", "settings"];
   S.view = valid.includes(view) ? view : "overview";
   if (S.view === "settings" && SET_TABS.some(([k]) => k === sub)) S.setTab = sub;
+  if (S.view === "notifications") S.nTab = sub === "recent" ? "recent" : "send";
   if (S.host === "review" && S.view !== "review") closeDetail();
   if (S.host === "drawer" && !(q || "").includes("f=")) {
     if (!(await okToDiscard())) return;
@@ -1921,6 +1923,44 @@ function tieChip(c) {
 
 // ---- Settings → Push notifications
 
+// ---- Settings → Push notifications: where mail comes from
+
+function mailProviderPanel(m) {
+  const opt = (v, l, cur) => `<option value="${v}" ${cur === v ? "selected" : ""}>${l}</option>`;
+  return `<section class="panel"><div class="panel-head"><h2>Send email with</h2><span class="sub">changing this turns automatic updates off</span></div><div class="panel-body">
+    ${setRow("Email program", "Gmail sends with an app password. Outlook uses the classic Outlook app already signed in on this computer, with no password, which suits a work account that blocks other tools.",
+      `<select class="select" id="mpProvider" aria-label="Email program">${opt("gmail", "Gmail", m.provider)}${opt("outlook", "Outlook (this computer)", m.provider)}</select>`)}
+    ${m.provider === "outlook" ? setRow("Outlook mode", "<b>Save drafts</b> puts each email in your Outlook Drafts folder and sends nothing; you review and send them yourself. <b>Send</b> sends each one straight away. Automatic updates only work in Send mode.",
+      `<select class="select" id="mpMode" aria-label="Outlook mode">${opt("drafts", "Save drafts only", m.outlook_mode)}${opt("send", "Send immediately", m.outlook_mode)}</select>`) : ""}
+  </div></section>`;
+}
+
+function outlookPanel(m) {
+  const unchecked = m.reason.startsWith("Outlook hasn't");
+  return `<section class="panel"><div class="panel-head"><h2>Outlook</h2><span class="sub">${m.drafts ? "emails are saved as drafts" : "emails are sent from your signed-in account"}</span></div><div class="panel-body">
+    ${m.configured
+      ? setRow("Ready", `Using Outlook as <b>${esc(m.user)}</b>. closet only creates outgoing emails. It never opens or reads anything in your mailbox.`,
+        `<div class="pair"><button class="btn small" type="button" id="mailTest">${m.drafts ? "Save a test draft" : "Send test email"}</button><button class="btn small ghost" type="button" id="olCheck">Check again</button></div>`)
+      : `<div class="banner ${unchecked ? "info" : ""}">${icon(unchecked ? "info" : "alert")}<span>${esc(m.reason)}</span></div>
+         ${setRow("Check Outlook", "Open classic Outlook and sign in first. closet connects to it once to learn which address it sends from. This can start Outlook if it isn't running.", `<button class="btn primary small" type="button" id="olCheck">Check Outlook</button>`)}`}
+  </div></section>`;
+}
+
+function gmailPanel(m) {
+  return `<section class="panel"><div class="panel-head"><h2>Gmail account<button type="button" class="gm-help" id="gmHelp" aria-label="How to set up Gmail sending" title="How to set up Gmail sending">i</button></h2><span class="sub">emails are sent from this address</span></div><div class="panel-body">
+      ${m.configured
+        ? setRow("Connected", `Sending as <b>${esc(m.user)}</b>${m.from_name ? `, shown as “${esc(m.from_name)}”` : ""}. The app password is kept encrypted on this computer only. It is never saved in the metadata folder or in backups.`,
+          `<div class="pair"><button class="btn small" type="button" id="mailTest">Send test email</button><button class="btn small ghost" type="button" id="gmailOff">Disconnect</button></div>`)
+        : `<div class="banner ${m.secure ? "info" : ""}">${icon(m.secure ? "info" : "alert")}<span>${esc(m.reason)}</span></div>`}
+      ${m.secure || m.configured ? setRow(m.configured ? "Use a different account" : "Connect Gmail",
+        `Turn on 2-Step Verification for the Gmail account, then create an <b>app password</b> (Google Account → Security → 2-Step Verification → App passwords) and paste it here. A normal Gmail password won't work. The sign-in is checked with Google before it's saved.`,
+        `<div class="stack"><input class="input" id="gmUser" type="email" placeholder="you@gmail.com" autocomplete="off" aria-label="Gmail address" value="${esc(m.user || "")}">
+          <input class="input" id="gmPass" type="password" placeholder="App password (16 letters)" autocomplete="new-password" aria-label="App password">
+          <input class="input" id="gmName" placeholder="Name shown to recipients (optional)" autocomplete="off" aria-label="Sender name" value="${esc(m.from_name || "")}">
+          <button class="btn primary small" type="button" id="gmConnect">Check and save</button></div>`) : ""}
+    </div></section>`;
+}
+
 function settingsNotify() {
   const nv = S.nv;
   if (!nv) {
@@ -1932,18 +1972,8 @@ function settingsNotify() {
   const years = [...new Set(nv.contacts.map((c) => c.class_year).filter(Boolean))].sort();
   const rep = S.importReport;
   return `
-    <section class="panel"><div class="panel-head"><h2>Gmail account<button type="button" class="gm-help" id="gmHelp" aria-label="How to set up Gmail sending" title="How to set up Gmail sending">i</button></h2><span class="sub">emails are sent from this address</span></div><div class="panel-body">
-      ${m.configured
-        ? setRow("Connected", `Sending as <b>${esc(m.user)}</b>${m.from_name ? `, shown as “${esc(m.from_name)}”` : ""}. The app password is kept encrypted on this computer only. It is never saved in the metadata folder or in backups.`,
-          `<div class="pair"><button class="btn small" type="button" id="gmailTest">Send test email</button><button class="btn small ghost" type="button" id="gmailOff">Disconnect</button></div>`)
-        : `<div class="banner ${m.secure ? "info" : ""}">${icon(m.secure ? "info" : "alert")}<span>${esc(m.reason)}</span></div>`}
-      ${m.secure || m.configured ? setRow(m.configured ? "Use a different account" : "Connect Gmail",
-        `Turn on 2-Step Verification for the Gmail account, then create an <b>app password</b> (Google Account → Security → 2-Step Verification → App passwords) and paste it here. A normal Gmail password won't work. The sign-in is checked with Google before it's saved.`,
-        `<div class="stack"><input class="input" id="gmUser" type="email" placeholder="you@gmail.com" autocomplete="off" aria-label="Gmail address" value="${esc(m.user || "")}">
-          <input class="input" id="gmPass" type="password" placeholder="App password (16 letters)" autocomplete="new-password" aria-label="App password">
-          <input class="input" id="gmName" placeholder="Name shown to recipients (optional)" autocomplete="off" aria-label="Sender name" value="${esc(m.from_name || "")}">
-          <button class="btn primary small" type="button" id="gmConnect">Check and save</button></div>`) : ""}
-    </div></section>
+    ${mailProviderPanel(m)}
+    ${m.provider === "outlook" ? outlookPanel(m) : gmailPanel(m)}
 
     <section class="panel"><div class="panel-head"><h2>Contact list</h2><span class="sub">${plural(nv.contacts.length, "email address", "email addresses")}, ${plural(nv.contacts.filter((c) => c.cadet && c.on_file).length, "linked to a cadet with paperwork", "linked to cadets with paperwork")}</span></div><div class="panel-body">
       <p class="hint">Import a spreadsheet (.xlsx or .csv) with names and emails in any layout. closet finds every email address, takes the name from the cells to its left, and matches it to the nearest recipient name on your forms. “Doe, John A.”, “C2C John Doe” and “John Doe” count as the same person. Check the matches below; anything you correct is kept.</p>
@@ -1978,20 +2008,21 @@ function settingsNotify() {
       <label class="fld" style="margin:6px 0 0"><span>Signature text</span><textarea class="input" id="sigText" rows="4" maxlength="1000" placeholder="V/r,&#10;First Sergeant, CS-07">${esc(nv.signature.text)}</textarea></label>
     </div></section>
 
-    <section class="panel"><div class="panel-head"><h2>What the emails say</h2><span class="sub">applies to manual and automatic emails alike</span></div><div class="panel-body">
+    <section class="panel"><div class="panel-head"><h2>What the emails say</h2><span class="sub">used by automatic updates. Manual notifications choose theirs in the Notifications tab</span></div><div class="panel-body">
       ${(() => {
         const ct = nv.content;
         const chk = (k, label, off = false) => `<label class="check"><input class="chk" type="checkbox" data-ct="${k}" ${ct[k] ? "checked" : ""} ${off ? "disabled" : ""}> ${label}</label>`;
         return setRow("Paperwork table", "A list of the cadet's forms with the columns you pick.", `<div class="stack">${chk("forms", "Include the table")}${[["date", "Date"], ["form", "Form type and positive / negative"], ["reason", "Reason"], ["details", "Reason details"], ["status", "Where it is now"], ["steps", "Step-by-step checklist"], ["outcomes", "Rewards and sanctions"]].map(([k, l]) => chk(k, l, !ct.forms)).join("")}</div>`)
           + setRow("Which forms are listed", "Totals and balances always count every form.", `<div class="stack">${chk("only_open", "Only forms still waiting on a step", !ct.forms)}${chk("positives", "Include positive forms", !ct.forms)}</div>`)
           + setRow("Tours and confinements", "How many each cadet still has to serve, from the assigned counts on their forms and what the discipline workbook says they served. See Settings → Discipline sheet.", `<div class="stack">${chk("balances", "Show what's left to serve")}${chk("balance_detail", "Also show served and assigned counts", !ct.balances)}</div>`)
+          + setRow("Final Form 10 copies", "Attaches the final, fully signed copy of each Form 10 to the email (rejected and archived forms are never attached). Up to 10 files per email, kept under the size limit of the mail account. In automatic updates, only the forms that just finished are attached.", `<div class="stack">${chk("attach_final", "Attach final signed Form 10s")}</div>`)
           + setRow("Extras", "", `<div class="stack">${chk("totals", "Totals line (forms, demerits, tours, confinements)")}${chk("footer", "“Sent by the First Sergeant's paperwork tracker” line")}</div>`);
       })()}
     </div></section>
 
     <section class="panel"><div class="panel-head"><h2>Automatic updates</h2><span class="sub">email someone when one of their forms passes a step</span></div><div class="panel-body">
       ${setRow("Send automatic updates", `Off by default, for everyone. When on, a person who is opted in (the Auto column above) gets an email as soon as one of their forms passes a step you've ticked below, with the same summary table as a manual notification. Updates go out only while closet is open. Turning this on never announces what has already happened, only what changes from now on.`,
-        `<select class="select" id="autoOn" ${m.configured ? "" : "disabled"} aria-label="Automatic updates">${[["0", "Off"], ["1", "On"]].map(([v, l]) => `<option value="${v}" ${(nv.auto.enabled ? "1" : "0") === v ? "selected" : ""}>${l}</option>`).join("")}</select>${m.configured ? "" : '<div class="hint">Connect a Gmail account first.</div>'}`)}
+        `<select class="select" id="autoOn" ${m.configured && !m.drafts ? "" : "disabled"} aria-label="Automatic updates">${[["0", "Off"], ["1", "On"]].map(([v, l]) => `<option value="${v}" ${(nv.auto.enabled ? "1" : "0") === v ? "selected" : ""}>${l}</option>`).join("")}</select>${m.drafts ? '<div class="hint">Outlook is set to save drafts. Switch it to Send to use automatic updates.</div>' : m.configured ? "" : '<div class="hint">Set up email above first.</div>'}`)}
       ${setRow("Which steps", "A form passing any ticked step triggers an update.",
         `<div class="stack">${nv.steps.map(({ key, label }) => `<label class="check"><input class="chk" type="checkbox" data-stage="${key}" ${nv.auto.stages.includes(key) ? "checked" : ""}> ${esc(label)}</label>`).join("")}</div>`)}
       ${setRow("Who", `${plural(optedIn, "person is", "people are")} opted in right now. Tick contacts in the list above and use <b>Opt in selected</b> or <b>Opt out selected</b>, or choose a class year in the Select menu to opt in a whole class at once.`,
@@ -2103,13 +2134,27 @@ function bindSettingsNotify() {
     const r = await closet.gmailSave({ user: $("#gmUser").value, password: $("#gmPass").value, fromName: $("#gmName").value });
     if (r?.ok) { toast("Gmail connected"); await load(); } else { toast(r?.error || "Couldn't connect", true); btn.disabled = false; btn.textContent = "Check and save"; }
   });
-  click("#gmailTest", async () => {
-    const btn = $("#gmailTest");
+  click("#mailTest", async () => {
+    const btn = $("#mailTest");
     btn.disabled = true;
-    const r = await closet.gmailTest();
+    const r = await closet.mailTest();
     btn.disabled = false;
-    if (r?.ok) toast(`Test email sent to ${r.to}`); else toast(r?.error || "The test failed", true);
+    if (r?.ok) toast(r.drafted ? `Test draft saved in Outlook, addressed to ${r.to}` : `Test email sent to ${r.to}`); else toast(r?.error || "The test failed", true);
   });
+  click("#olCheck", async () => {
+    const btn = $("#olCheck");
+    btn.disabled = true;
+    btn.textContent = "Checking Outlook…";
+    const r = await closet.outlookCheck();
+    if (r?.ok) { toast(`Outlook is ready as ${r.user}`); await load(); } else { toast(r?.error || "Couldn't reach Outlook", true); btn.disabled = false; btn.textContent = "Check Outlook"; }
+  });
+  const setMail = async (patch) => {
+    const r = await closet.mailSettings(patch);
+    if (!r?.ok) toast(r?.error || "Couldn't change that", true);
+    await load();
+  };
+  if ($("#mpProvider")) $("#mpProvider").onchange = (e) => setMail({ provider: e.target.value });
+  if ($("#mpMode")) $("#mpMode").onchange = (e) => setMail({ outlook_mode: e.target.value });
   click("#gmailOff", async () => {
     const ok = await ask({ title: "Disconnect Gmail?", message: "<p>closet forgets the app password and turns automatic updates off. Your contact list stays.</p>", choices: [{ label: "Cancel", value: null }, { label: "Disconnect", value: true, primary: true }], danger: true });
     if (!ok) return;
@@ -2193,6 +2238,57 @@ function bindSettingsNotify() {
 
 // ---- Notifications tab
 
+// ---- Notifications: a three-step wizard (message, recipients, review and send)
+// The message and its choices are saved on the server (`nv.manual`) so the next notification starts from
+// them. Who to send to is picked fresh each time. Every way of picking people leaves out anyone with no
+// paperwork of the chosen kind, except "One person", which always sends.
+
+const NW_MODES = [["manual", "Pick people"], ["one", "One person"], ["class", "By class year"], ["outstanding", "Outstanding paperwork"], ["everyone", "Everyone"]];
+const NW_STEPS = ["Message", "Recipients", "Review and send"];
+const NW_COLUMNS = [["date", "Date"], ["form", "Form type and positive / negative"], ["reason", "Reason"], ["details", "Reason details"], ["status", "Where it is now"], ["steps", "Step-by-step checklist"], ["outcomes", "Rewards and sanctions"]];
+const NW_PAGE = 25; // names per page in the recipient lists
+const nwFresh = () => ({ page: 0, step: 1, mode: "manual", sel: new Set(), q: "", one: "", years: new Set(), busy: false, progress: null, result: null });
+
+// Several kinds of paperwork can be chosen at once; a form counts if it fits any of them.
+const nwScopes = () => S.nv.manual.scopes;
+const nwScopeLabel = () => S.nv.scopes.filter((s) => nwScopes().includes(s.key)).map((s) => s.label.toLowerCase()).join(" + ");
+const nwInScope = (p) => p.fl.filter((f) => nwScopes().some((k) => f.in.includes(k)));
+const nwCount = (p) => nwInScope(p).length;
+const nwOut = (p) => nwInScope(p).filter((f) => f.out).length;
+const nwRelevant = (p) => nwCount(p) > 0;
+
+/** Who the current choices would send to: `ok` have an email, `noMail` can't be emailed. */
+function nwRecipients() {
+  const nv = S.nv;
+  const w = S.nw;
+  const rel = nv.people.filter(nwRelevant);
+  let list;
+  if (w.mode === "one") list = nv.people.filter((p) => p.key === w.one);
+  else if (w.mode === "class") list = rel.filter((p) => w.years.has(p.class_year));
+  else if (w.mode === "outstanding") list = rel.filter((p) => nwOut(p) > 0);
+  else if (w.mode === "everyone") list = rel;
+  else list = rel.filter((p) => w.sel.has(p.key));
+  return { all: list, ok: list.filter((p) => p.emails.length), noMail: list.filter((p) => !p.emails.length) };
+}
+
+let nwSaveTimer = null;
+let nwPending = {}; // changes not yet sent; they accumulate so a quick second edit can't drop the first
+async function nwPush() {
+  clearTimeout(nwSaveTimer);
+  nwSaveTimer = null;
+  const patch = nwPending;
+  nwPending = {};
+  if (!Object.keys(patch).length) return;
+  try { await api("/api/notify/draft", { method: "PUT", body: patch }); } catch (e) { toast(e.message, true); }
+}
+function nwSaveDraft(patch) {
+  Object.assign(S.nv.manual, patch);
+  Object.assign(nwPending, patch);
+  clearTimeout(nwSaveTimer);
+  nwSaveTimer = setTimeout(nwPush, 500);
+}
+const nwFlushDraft = nwPush;
+
 function viewNotifications() {
   const nv = S.nv;
   if (!nv) {
@@ -2200,140 +2296,323 @@ function viewNotifications() {
     refreshNotify().then(() => { if (S.view === "notifications" && S.nv) viewNotifications(); });
     return;
   }
-  const years = [...new Set(nv.people.map((p) => p.class_year).filter(Boolean))].sort();
+  if (!S.nw) S.nw = nwFresh();
   const warn = !nv.ready
     ? `<div class="banner">${icon("alert")}<span>${esc(nv.mail.reason)} Nothing can be sent until then. <a href="#/settings/notify">Open Push notifications settings</a></span></div>`
     : !nv.contacts.length
       ? `<div class="banner info">${icon("info")}<span>The contact list is empty, so there's no one to email yet. <a href="#/settings/notify">Import a spreadsheet of names and emails</a> or add addresses by hand.</span></div>` : "";
   const held = nv.log.find((l) => l.kind === "auto" && !l.ok && /^Held/.test(l.error || ""));
-  $("#main").innerHTML = head("Notifications", "Email each cadet a summary of their own paperwork, or pick a few. Your message comes first, then a table of their forms.") + banners() + warn +
-    (held && nv.log[0] === held ? `<div class="banner">${icon("alert")}<span>${esc(held.error)}</span></div>` : "") + `
-    <section class="panel compose"><div class="panel-head"><h2>Message</h2><span class="sub">added under it automatically: every active form, where it is in processing, and its rewards or sanctions</span></div><div class="panel-body">
-      <label class="fld"><span>Subject</span><input class="input" id="nSubject" value="${esc(S.nSubject)}" maxlength="150" autocomplete="off"></label>
-      <label class="fld"><span>Your message</span><textarea class="input" id="nMessage" rows="5" placeholder="Hi {first_name}, here's where your paperwork stands…">${esc(S.nMessage)}</textarea></label>
-      <p class="hint">Type <code>{first_name}</code> or <code>{name}</code> and closet fills in each person's own. Plain text only.</p>
-    </div></section>
-    <div class="toolbar">
-      <label class="search">${icon("search")}<input class="input" id="nQ" type="search" placeholder="Find a cadet" value="${esc(S.nQ)}" aria-label="Find a cadet"></label>
-      <select class="select" id="nClass" aria-label="Class year"><option value="all">All classes</option>${years.map((y) => `<option value="${esc(y)}" ${S.nClass === y ? "selected" : ""}>Class of ${esc(y)}</option>`).join("")}</select>
-      <select class="select" id="nFilter" aria-label="Show">${[["all", "Everyone with paperwork"], ["email", "Has an email on file"], ["noemail", "No email on file"], ["open", "Has a form waiting on a step"]].map(([v, l]) => `<option value="${v}" ${S.nFilter === v ? "selected" : ""}>${l}</option>`).join("")}</select>
-      <span class="spacer"></span>
-      <button class="btn ghost small" type="button" id="nAll">Select all shown</button><button class="btn ghost small" type="button" id="nNone">Clear selection</button>
-    </div>
-    <div id="nTable"></div>
-    <div class="copybar" id="nBar"></div>
-    <section class="panel" style="margin-top:22px"><div class="panel-head"><h2>Recent activity</h2><span class="sub">what was sent, and anything that wasn't</span></div><div class="panel-body" id="nLog"></div></section>`;
-  $("#nSubject").oninput = (e) => { S.nSubject = e.target.value; };
-  $("#nMessage").oninput = (e) => { S.nMessage = e.target.value; };
-  $("#nQ").oninput = (e) => { S.nQ = e.target.value; renderPeople(); };
-  $("#nClass").onchange = (e) => { S.nClass = e.target.value; renderPeople(); };
-  $("#nFilter").onchange = (e) => { S.nFilter = e.target.value; renderPeople(); };
-  $("#nAll").onclick = () => { shownPeople().filter((p) => p.emails.length).forEach((p) => S.nSel.add(p.key)); renderPeople(); };
-  $("#nNone").onclick = () => { S.nSel.clear(); renderPeople(); };
-  renderPeople();
-  renderLog();
+  $("#main").innerHTML = head("Notifications", "Email cadets a summary of their paperwork: write the message, choose who gets it, then send.") + banners() + warn +
+    (held && nv.log[0] === held ? `<div class="banner">${icon("alert")}<span>${esc(held.error)}</span></div>` : "");
+  const tab = S.nTab === "recent" ? "recent" : "send";
+  const tabs = `<nav class="set-tabs" aria-label="Notifications sections">${[["send", "Send a notification"], ["recent", "Recently sent"]].map(([k, l]) => `<a href="#/notifications${k === "recent" ? "/recent" : ""}" ${k === tab ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>`;
+  $("#main").innerHTML += tabs + (tab === "send"
+    ? `<ol class="wiz-steps" id="nwSteps"></ol><div id="nwBody"></div>`
+    : `<section class="panel"><div class="panel-head"><h2>Recently sent</h2><span class="sub">what was sent, and anything that wasn't</span></div><div class="panel-body" id="nLog"></div></section>`);
+  if (tab === "send") renderWizard(); else renderLog();
 }
 
-function shownPeople() {
-  const q = S.nQ.trim().toLowerCase();
-  return S.nv.people.filter((p) => {
-    if (q && !p.name.toLowerCase().includes(q)) return false;
-    if (S.nClass !== "all" && p.class_year !== S.nClass) return false;
-    if (S.nFilter === "email") return p.emails.length > 0;
-    if (S.nFilter === "noemail") return p.emails.length === 0;
-    if (S.nFilter === "open") return p.open > 0;
-    return true;
-  });
+/** The page of `list` being shown, plus the pager bar for it (empty when it all fits on one page). */
+function nwPage(list) {
+  const w = S.nw;
+  const pages = Math.max(1, Math.ceil(list.length / NW_PAGE));
+  w.page = Math.min(Math.max(0, w.page || 0), pages - 1);
+  const from = w.page * NW_PAGE;
+  if (list.length <= NW_PAGE) return { rows: list, pager: "" };
+  const near = [...new Set([0, w.page - 1, w.page, w.page + 1, pages - 1])].filter((i) => i >= 0 && i < pages).sort((a, b) => a - b);
+  const nums = near.map((i, k) => `${k && i - near[k - 1] > 1 ? '<span class="dim">…</span>' : ""}<button type="button" data-npg="${i}" aria-pressed="${i === w.page}" aria-label="Page ${i + 1}">${i + 1}</button>`).join("");
+  return {
+    rows: list.slice(from, from + NW_PAGE),
+    pager: `<div class="pager"><span>Showing ${from + 1}–${Math.min(from + NW_PAGE, list.length)} of ${list.length}</span><span class="spacer"></span><div class="seg" role="group" aria-label="Pages"><button type="button" data-npg="${w.page - 1}" ${w.page ? "" : "disabled"}>Previous</button>${nums}<button type="button" data-npg="${w.page + 1}" ${w.page < pages - 1 ? "" : "disabled"}>Next</button></div></div>`,
+  };
+}
+function nwBindPager() {
+  $$("[data-npg]").forEach((b) => (b.onclick = () => { S.nw.page = +b.dataset.npg; renderWizard(); }));
 }
 
-function renderPeople() {
+function nwGo(step) {
+  S.nw.step = step;
+  S.nw.page = 0;
+  renderWizard();
+  window.scrollTo?.({ top: 0 });
+}
+
+function renderWizard() {
+  if (S.view !== "notifications" || !$("#nwBody")) return;
+  const w = S.nw;
+  $("#nwSteps").innerHTML = NW_STEPS.map((l, i) => {
+    const n = i + 1;
+    const state = w.result && !w.result.test ? "done" : n < w.step ? "done" : n === w.step ? "now" : "todo";
+    const clickable = !w.busy && !(w.result && !w.result.test) && n < w.step;
+    return `<li class="wiz-step ${state}" ${n === w.step ? 'aria-current="step"' : ""}>${clickable ? `<button type="button" data-nwgo="${n}">` : "<span>"}<i>${state === "done" ? icon("check") : n}</i>${esc(l)}${clickable ? "</button>" : "</span>"}</li>`;
+  }).join("");
+  $$("[data-nwgo]").forEach((b) => (b.onclick = () => nwGo(Number(b.dataset.nwgo))));
+  if (w.step === 1) nwStepMessage();
+  else if (w.step === 2) nwStepPeople();
+  else nwStepSend();
+}
+
+// ---- step 1: the message
+
+function nwStepMessage() {
   const nv = S.nv;
-  const list = shownPeople();
-  const have = new Set(nv.people.filter((p) => p.emails.length).map((p) => p.key));
-  [...S.nSel].forEach((k) => { if (!have.has(k)) S.nSel.delete(k); });
-  if (!nv.people.length) {
-    $("#nTable").innerHTML = `<div class="panel"><div class="empty">${icon("cadets")}<h3>No paperwork yet</h3><p>Cadets appear here once they have active paperwork on file.</p></div></div>`;
-  } else if (!list.length) {
-    $("#nTable").innerHTML = `<div class="panel"><div class="empty">${icon("search")}<h3>No one matches</h3><p>Clear the search or change the filters.</p></div></div>`;
+  const m = nv.manual;
+  const ct = m.content;
+  const forms = nv.people.reduce((a, p) => a + nwCount(p), 0);
+  const people = nv.people.filter(nwRelevant).length;
+  const chk = (k, label, off = false) => `<label class="check"><input class="chk" type="checkbox" data-nct="${k}" ${ct[k] ? "checked" : ""} ${off ? "disabled" : ""}> ${label}</label>`;
+  $("#nwBody").innerHTML = `
+    <section class="panel compose"><div class="panel-head"><h2>Message</h2><span class="sub">saved for next time</span></div><div class="panel-body">
+      <label class="fld"><span>Subject</span><input class="input" id="nSubject" value="${esc(m.subject)}" maxlength="150" autocomplete="off"></label>
+      <label class="fld"><span>Your message</span><textarea class="input" id="nMessage" rows="6" placeholder="Cadet {last_name}, here's where your paperwork stands…">${esc(m.message)}</textarea></label>
+      <p class="hint">Type <code>{first_name}</code>, <code>{last_name}</code> or <code>{name}</code> and closet fills in each person's own. Plain text only. Your message comes first, then the paperwork you choose below.</p>
+    </div></section>
+    <section class="panel"><div class="panel-head"><h2>Which paperwork</h2><span class="sub">${plural(forms, "form")} across ${plural(people, "person", "people")}</span></div><div class="panel-body">
+      <div class="opt-grid" role="group" aria-label="Which paperwork">${nv.scopes.map((s) => `<label class="opt ${m.scopes.includes(s.key) ? "on" : ""}"><input type="checkbox" name="nScope" value="${s.key}" ${m.scopes.includes(s.key) ? "checked" : ""}><span>${esc(s.label)}</span><small>${esc(NW_SCOPE_HELP[s.key])}</small></label>`).join("")}</div>
+      <p class="hint">Choose as many as you like; a form is included if it fits any of them. The email lists only these forms. Tours, confinements and the totals line always count every form.</p>
+    </div></section>
+    <section class="panel"><div class="panel-head"><h2>What to include</h2></div><div class="panel-body">
+      ${setRow("Final signed copies", "Attaches the final, fully signed copy of each Form 10 in this group (up to 10 files, kept under the mail size limit).", `<div class="stack">${chk("attach_final", "Attach the PDFs")}</div>`)}
+      ${setRow("Paperwork table", "A list of the forms with the details you pick.", `<div class="stack">${chk("forms", "Include the table")}${NW_COLUMNS.map(([k, l]) => chk(k, l, !ct.forms)).join("")}</div>`)}
+      ${setRow("Tours and confinements", "How many each cadet still has to serve.", `<div class="stack">${chk("balances", "Show what's left to serve")}${chk("balance_detail", "Also show served and assigned counts", !ct.balances)}</div>`)}
+      ${setRow("Extras", "", `<div class="stack">${chk("totals", "Totals line")}${chk("footer", "“Sent by the First Sergeant's paperwork tracker” line")}</div>`)}
+    </div></section>
+    <div class="wiz-nav"><span class="spacer"></span><button class="btn primary" type="button" id="nwNext">Choose recipients</button></div>`;
+  $("#nSubject").oninput = (e) => nwSaveDraft({ subject: e.target.value });
+  $("#nMessage").oninput = (e) => nwSaveDraft({ message: e.target.value });
+  $$('input[name="nScope"]').forEach((r) => (r.onchange = async () => {
+    // "Everything" already covers the rest, so it and the specific kinds exclude each other; never none
+    let next = r.value === "all" ? (r.checked ? ["all"] : []) : r.checked ? [...m.scopes.filter((k) => k !== "all"), r.value] : m.scopes.filter((k) => k !== r.value);
+    if (!next.length) next = ["all"];
+    nwSaveDraft({ scopes: next });
+    S.nw.sel.clear();
+    await nwFlushDraft();
+    renderWizard();
+  }));
+  $$("[data-nct]").forEach((c) => (c.onchange = async () => {
+    try {
+      await api("/api/notify/draft", { method: "PUT", body: { content: { [c.dataset.nct]: c.checked } } });
+      ct[c.dataset.nct] = c.checked;
+    } catch (e) { c.checked = !c.checked; toast(e.message, true); }
+    renderWizard();
+  }));
+  $("#nwNext").onclick = async () => {
+    if (!m.subject.trim()) { toast("Give the email a subject", true); $("#nSubject").focus(); return; }
+    await nwFlushDraft();
+    nwGo(2);
+  };
+}
+const NW_SCOPE_HELP = {
+  all: "Every form on file, including rejected ones",
+  negative: "Negative forms that haven't been rejected",
+  positive: "Positive forms that haven't been rejected",
+  outstanding_negative: "Negative forms still waiting on a signature or step",
+  in_progress: "Any form still waiting on a signature or step",
+  rejected: "Forms that were rejected and need redoing",
+};
+
+// ---- step 2: who gets it
+
+function nwStepPeople() {
+  const nv = S.nv;
+  const w = S.nw;
+  const rel = nv.people.filter(nwRelevant);
+  const hidden = nv.people.length - rel.length;
+  const years = [...new Set(rel.map((p) => p.class_year).filter(Boolean))].sort();
+  const q = w.q.trim().toLowerCase();
+  const match = (p) => !q || p.name.toLowerCase().includes(q);
+
+  const row = (p, box) => `<tr class="${box === "check" && w.sel.has(p.key) ? "sel" : ""}">
+    <td style="width:34px">${box === "check" ? `<input class="chk" type="checkbox" data-nsel="${esc(p.key)}" ${w.sel.has(p.key) ? "checked" : ""} ${p.emails.length ? "" : "disabled"} aria-label="Send to ${esc(p.name)}">`
+      : box === "radio" ? `<input class="chk" type="radio" name="nOne" data-none="${esc(p.key)}" ${w.one === p.key ? "checked" : ""} ${p.emails.length ? "" : "disabled"} aria-label="Send to ${esc(p.name)}">` : ""}</td>
+    <td class="who">${esc(p.name)}</td><td>${esc(p.class_year) || '<span class="dim">—</span>'}</td>
+    <td class="num">${nwCount(p)}</td><td class="num">${nwOut(p) || '<span class="dim">0</span>'}</td>
+    <td>${p.emails.length ? `<span class="sub" style="max-width:34ch">${esc(p.emails.join(", "))}</span>` : '<span class="chip muted" title="Add this person in Settings → Push notifications">No email on file</span>'}</td></tr>`;
+  const table = (list, box, empty) => {
+    const pg = nwPage(list);
+    return list.length
+      ? `<div class="table-wrap"><table class="t"><thead><tr><th></th><th>Cadet</th><th>Class</th><th class="num" title="Forms in the chosen group">Forms</th><th class="num" title="Of those, still waiting on something or rejected">Outstanding</th><th>Email</th></tr></thead><tbody>${pg.rows.map((p) => row(p, box)).join("")}</tbody></table></div>${pg.pager}`
+      : `<div class="panel"><div class="empty" style="padding:28px">${icon("search")}<h3>${esc(empty)}</h3></div></div>`;
+  };
+
+  let body = "";
+  if (w.mode === "manual") {
+    const list = rel.filter(match);
+    body = `<div class="toolbar"><label class="search">${icon("search")}<input class="input" id="nQ" type="search" placeholder="Find a cadet" value="${esc(w.q)}" aria-label="Find a cadet"></label>
+      <span class="spacer"></span><button class="btn ghost small" type="button" id="nAll">Select all matching</button><button class="btn ghost small" type="button" id="nNone">Clear selection</button></div>${table(list, "check", rel.length ? "No one matches" : "No one has paperwork in this group")}`;
+  } else if (w.mode === "one") {
+    const list = q ? nv.people.filter(match).slice(0, 8) : nv.people.filter((p) => p.key === w.one);
+    body = `<div class="toolbar"><label class="search">${icon("search")}<input class="input" id="nQ" type="search" placeholder="Search for a cadet by name" value="${esc(w.q)}" aria-label="Search for a cadet"></label></div>
+      <p class="hint">This person gets the email even if they have no paperwork in this group; the table in it will say so.</p>
+      ${table(list, "radio", q ? "No one matches that name" : "Search above to choose someone")}`;
+  } else if (w.mode === "class") {
+    [...w.years].forEach((y) => { if (!years.includes(y)) w.years.delete(y); });
+    const list = rel.filter((p) => w.years.has(p.class_year));
+    body = `<div class="toolbar" role="group" aria-label="Class years">${years.length ? years.map((y) => `<label class="check yr"><input class="chk" type="checkbox" data-nyear="${esc(y)}" ${w.years.has(y) ? "checked" : ""}> Class of ${esc(y)} <span class="dim">(${rel.filter((p) => p.class_year === y).length})</span></label>`).join("") : '<span class="dim">No one with paperwork in this group has a class year.</span>'}
+      <span class="spacer"></span>${years.length ? '<button class="btn ghost small" type="button" id="nYearAll">All classes</button><button class="btn ghost small" type="button" id="nYearNone">None</button>' : ""}</div>
+      <p class="hint">Tick one or more classes. Everyone in them with paperwork in the chosen group is included.</p>${table(list, "", w.years.size ? "No one in these classes has paperwork in this group" : "Tick a class above")}`;
+  } else if (w.mode === "everyone") {
+    body = `<p class="hint">Everyone who has a <b>${esc(nwScopeLabel())}</b> form, whether or not it still needs anything.</p>${table(rel, "", "No one has paperwork in this group")}`;
   } else {
-    $("#nTable").innerHTML = `<div class="table-wrap"><table class="t"><thead><tr><th style="width:34px"></th><th>Cadet</th><th>Class</th><th class="num">Forms</th><th class="num">Waiting</th><th>Email</th><th></th></tr></thead><tbody>
-      ${list.map((p) => `<tr class="${S.nSel.has(p.key) ? "sel" : ""}">
-        <td><input class="chk" type="checkbox" data-nsel="${esc(p.key)}" ${S.nSel.has(p.key) ? "checked" : ""} ${p.emails.length ? "" : "disabled"} aria-label="Send to ${esc(p.name)}"></td>
-        <td class="who">${esc(p.name)}</td><td>${esc(p.class_year) || '<span class="dim">—</span>'}</td>
-        <td class="num">${p.forms}</td><td class="num">${p.open || '<span class="dim">0</span>'}</td>
-        <td>${p.emails.length ? `<span class="sub" style="max-width:34ch">${esc(p.emails.join(", "))}</span>` : '<span class="chip muted" title="Add this person in Settings → Push notifications">No email on file</span>'}</td>
-        <td class="nowrap" style="text-align:right"><button class="icon-btn" type="button" data-npreview="${esc(p.key)}" ${p.emails.length ? "" : "disabled"} title="Preview this person's email" aria-label="Preview email for ${esc(p.name)}">${icon("search")}</button></td></tr>`).join("")}
-      </tbody></table></div>`;
+    const list = rel.filter((p) => nwOut(p) > 0);
+    body = `<p class="hint">Everyone with a <b>${esc(nwScopeLabel())}</b> form that is still waiting on a signature or step, or was rejected.</p>${table(list, "", "No one has outstanding paperwork in this group")}`;
   }
-  $$("[data-nsel]").forEach((c) => (c.onchange = () => { c.checked ? S.nSel.add(c.dataset.nsel) : S.nSel.delete(c.dataset.nsel); renderPeople(); }));
+
+  const r = nwRecipients();
+  const tooMany = r.ok.length > nv.max_batch;
+  $("#nwBody").innerHTML = `
+    <div class="toolbar wiz-modes"><div class="seg" role="group" aria-label="How to choose people">${NW_MODES.map(([k, l]) => `<button type="button" data-nmode="${k}" aria-pressed="${w.mode === k}">${l}</button>`).join("")}</div>
+      <span class="dim">${hidden && w.mode !== "one" ? `${plural(hidden, "person", "people")} left out: no ${esc(nwScopeLabel())} paperwork` : ""}</span></div>
+    ${body}
+    <div class="copybar wiz-nav" id="nwBar"><button class="btn ghost" type="button" id="nwBack">Back</button>
+      <span class="txt"><b>${plural(r.ok.length, "person", "people")}</b> will be emailed${r.noMail.length ? `<br><span class="dim">${plural(r.noMail.length, "person has", "people have")} no email on file and will be skipped</span>` : ""}${tooMany ? `<br><span style="color:#f0a3a3;font-size:12.5px">The most closet sends at once is ${nv.max_batch}.</span>` : ""}</span>
+      <button class="btn primary" type="button" id="nwNext" ${r.ok.length && !tooMany ? "" : "disabled"}>Review</button></div>`;
+  $$("[data-nmode]").forEach((b) => (b.onclick = () => { w.mode = b.dataset.nmode; w.q = ""; w.page = 0; renderWizard(); }));
+  nwBindPager();
+  const q$ = $("#nQ");
+  if (q$) q$.oninput = (e) => { w.q = e.target.value; w.page = 0; const pos = e.target.selectionStart; renderWizard(); const n = $("#nQ"); n.focus(); n.setSelectionRange(pos, pos); };
+  $$("[data-nyear]").forEach((c) => (c.onchange = () => { c.checked ? w.years.add(c.dataset.nyear) : w.years.delete(c.dataset.nyear); w.page = 0; renderWizard(); }));
+  if ($("#nYearAll")) $("#nYearAll").onclick = () => { years.forEach((y) => w.years.add(y)); renderWizard(); };
+  if ($("#nYearNone")) $("#nYearNone").onclick = () => { w.years.clear(); renderWizard(); };
+  if ($("#nAll")) $("#nAll").onclick = () => { rel.filter(match).filter((p) => p.emails.length).forEach((p) => w.sel.add(p.key)); renderWizard(); };
+  if ($("#nNone")) $("#nNone").onclick = () => { w.sel.clear(); renderWizard(); };
+  $$("[data-nsel]").forEach((c) => (c.onchange = () => { c.checked ? w.sel.add(c.dataset.nsel) : w.sel.delete(c.dataset.nsel); renderWizard(); }));
+  $$("[data-none]").forEach((c) => (c.onchange = () => { w.one = c.dataset.none; renderWizard(); }));
+  $("#nwBack").onclick = () => nwGo(1);
+  $("#nwNext").onclick = () => nwGo(3);
+}
+
+// ---- step 3: review, then send with progress
+
+function nwStepSend() {
+  const nv = S.nv;
+  const w = S.nw;
+  const m = nv.manual;
+  const ct = m.content;
+  const r = nwRecipients();
+  const drafts = nv.mail.drafts;
+  const details = [ct.forms && "paperwork table", ct.balances && "tours and confinements", ct.totals && "totals line", ct.attach_final && "final signed Form 10s attached"].filter(Boolean);
+  const done = w.result && !w.result.test ? w.result : null;
+
+  if (w.busy && !w.test) { nwProgressView(); return; }
+  if (done) { nwDoneView(done); return; }
+
+  const sample = r.ok[0];
+  const pg = nwPage(r.ok);
+  $("#nwBody").innerHTML = `
+    <section class="panel"><div class="panel-head"><h2>Ready to ${drafts ? "save drafts" : "send"}?</h2><span class="sub">${drafts ? "Outlook is set to save drafts; nothing is sent until you send them" : `from ${esc(nv.mail.user)}`}</span></div><div class="panel-body">
+      ${setRow("Subject", "", `<span>${esc(m.subject)}</span>`)}
+      ${setRow("Message", "", `<span style="white-space:pre-wrap">${esc(m.message.trim()) || '<span class="dim">(no message, just the paperwork)</span>'}</span>`)}
+      ${setRow("Paperwork", "", `<span><b>${esc(nwScopeLabel().replace(/^./, (c) => c.toUpperCase()))}</b>${details.length ? `, with ${esc(details.join(", "))}` : ""}</span>`)}
+      ${setRow(`To ${plural(r.ok.length, "person", "people")}`, `Chosen by: ${esc(NW_MODES.find(([k]) => k === w.mode)[1].toLowerCase())}.${r.noMail.length ? ` Skipped, no email on file: ${esc(r.noMail.map((p) => p.name).join(", "))}.` : ""}`, "")}
+      <div class="table-wrap"><table class="t"><thead><tr><th>Cadet</th><th>Email</th><th class="num">Forms listed</th><th></th></tr></thead><tbody>${pg.rows.map((p) => `<tr><td class="who">${esc(p.name)}</td><td><span class="sub" style="max-width:34ch">${esc(p.emails.join(", "))}</span></td><td class="num">${nwCount(p)}</td>
+        <td class="nowrap" style="text-align:right"><button class="icon-btn" type="button" data-npreview="${esc(p.key)}" title="Preview this person's email" aria-label="Preview email for ${esc(p.name)}">${icon("search")}</button></td></tr>`).join("")}</tbody></table></div>${pg.pager}
+    </div></section>
+    <div class="copybar wiz-nav"><button class="btn ghost" type="button" id="nwBack">Back</button>
+      <span class="txt">${nv.ready ? "" : `<span style="color:#f0a3a3;font-size:12.5px">${esc(nv.mail.reason)}</span>`}</span>
+      <button class="btn" type="button" id="nTest" ${nv.ready && sample && !w.busy ? "" : "disabled"} title="${drafts ? "Saves the first person's email as a draft addressed to you" : "Sends the first person's email to your own address instead of theirs"}">${drafts ? "Save a test draft for me" : "Send a test to me"}</button>
+      <button class="btn primary" type="button" id="nSend" ${nv.ready && r.ok.length && !w.busy ? "" : "disabled"}>${drafts ? "Save drafts for" : "Send to"} ${plural(r.ok.length, "person", "people")}</button></div>`;
+  $("#nwBack").onclick = () => nwGo(2);
+  nwBindPager();
   $$("[data-npreview]").forEach((b) => (b.onclick = () => previewEmail(b.dataset.npreview)));
-  const n = S.nSel.size;
-  const can = nv.ready && n > 0 && !S.sending;
-  $("#nBar").innerHTML = `<span class="txt"><b>${plural(n, "person", "people")}</b> selected${nv.ready ? "" : `<br><span style="color:#f0a3a3;font-size:12.5px">${esc(nv.mail.reason)}</span>`}</span>
-    <button class="btn" type="button" id="nTest" ${can ? "" : "disabled"} title="Sends the first selected person's email to your own Gmail address instead of theirs">Send a test to me</button>
-    <button class="btn primary" type="button" id="nSend" ${can ? "" : "disabled"}>${S.sending ? "Sending…" : `Send to ${plural(n, "person", "people")}`}</button>`;
-  $("#nTest").onclick = () => sendEmails(true);
-  $("#nSend").onclick = () => sendEmails(false);
+  $("#nTest").onclick = () => nwSend(true);
+  $("#nSend").onclick = () => nwSend(false);
+}
+
+function nwProgressView() {
+  const w = S.nw;
+  $("#nwBody").innerHTML = `<section class="panel"><div class="panel-head"><h2>${S.nv.mail.drafts ? "Saving drafts" : "Sending"}</h2><span class="sub" id="nwCount"></span></div><div class="panel-body">
+    <div class="pbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="nwBar"><span id="nwFill"></span></div>
+    <p id="nwNow" class="nw-now"></p><p class="hint">Keep closet open until this finishes.</p></div></section>`;
+  nwPaintProgress();
+}
+function nwPaintProgress() {
+  const p = S.nw.progress;
+  if (!p || !$("#nwFill")) return;
+  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+  $("#nwFill").style.width = pct + "%";
+  $("#nwBar").setAttribute("aria-valuenow", String(pct));
+  $("#nwCount").textContent = `${p.done} of ${p.total}${p.failed ? `, ${p.failed} failed` : ""}`;
+  $("#nwNow").innerHTML = p.current ? `${S.nv.mail.drafts ? "Saving a draft for" : "Sending to"} <b>${esc(p.current.name)}</b> <span class="dim">${esc(p.current.to.join(", "))}</span>` : p.done >= p.total && p.total ? "Finishing up…" : "Starting…";
+}
+
+function nwDoneView(r) {
+  const drafts = r.drafted;
+  const bad = r.failed.length || r.skipped.length || r.aborted;
+  $("#nwBody").innerHTML = `<section class="panel"><div class="panel-head"><h2>${r.sent ? (drafts ? "Drafts saved" : "Sent") : "Nothing was sent"}</h2><span class="sub">${r.sent ? `${plural(r.sent, drafts ? "draft" : "email")}${r.failed.length ? `, ${r.failed.length} failed` : ""}` : ""}</span></div><div class="panel-body">
+    <div class="pbar full"><span style="width:100%"></span></div>
+    ${r.sent && drafts ? '<p class="hint">They are in your Outlook Drafts folder. Nothing has been sent yet.</p>' : ""}
+    ${bad ? `${r.failed.length ? `<p><b>Failed</b></p><ul>${r.failed.map((f) => `<li>${esc(f.name)}: ${esc(f.error)}</li>`).join("")}</ul>` : ""}${r.skipped.length ? `<p><b>Skipped</b></p><ul>${r.skipped.map((f) => `<li>${esc(f.name)}: ${esc(f.reason)}</li>`).join("")}</ul>` : ""}${r.aborted ? "<p>Sending stopped early because every remaining email would have failed the same way.</p>" : ""}` : ""}
+    <div class="wiz-nav" style="margin-top:14px"><span class="spacer"></span><a class="btn ghost" href="#/notifications/recent">See recently sent</a><button class="btn primary" type="button" id="nwAgain">Start another notification</button></div></div></section>`;
+  $("#nwAgain").onclick = () => { S.nw = nwFresh(); renderWizard(); };
+}
+
+async function nwSend(test) {
+  const w = S.nw;
+  const nv = S.nv;
+  if (w.busy) return;
+  if (!nv.ready) { toast(nv.mail.reason, true); return; }
+  const keys = nwRecipients().ok.map((p) => p.key);
+  if (!keys.length) return;
+  const m = nv.manual;
+  const body = { keys: test ? keys.slice(0, 1) : keys, subject: m.subject, message: m.message, scopes: m.scopes, content: m.content, test };
+  if (!test) {
+    const ok = await ask({
+      title: nv.mail.drafts ? `Save drafts for ${plural(keys.length, "person", "people")}?` : `Email ${plural(keys.length, "person", "people")}?`,
+      message: `<p>${nv.mail.drafts ? `closet saves a draft in Outlook for each person (as <b>${esc(nv.mail.user)}</b>). <b>Nothing is sent</b> until you send the drafts yourself.` : `Each person gets their own email from <b>${esc(nv.mail.user)}</b>, with discipline details included.`}</p>`,
+      choices: [{ label: "Cancel", value: null }, { label: nv.mail.drafts ? "Save drafts" : "Send", value: true, primary: true }],
+    });
+    if (!ok) return;
+  }
+  w.busy = true;
+  w.test = test;
+  w.progress = { total: body.keys.length, done: 0, current: null, failed: 0 };
+  renderWizard();
+  const poll = test ? null : setInterval(async () => {
+    try {
+      const p = await api("/api/notify/progress");
+      if (p.running) { w.progress = p; nwPaintProgress(); }
+    } catch { /* the final answer still arrives */ }
+  }, 300);
+  try {
+    const r = await api("/api/notify/send", { method: "POST", body });
+    if (test) toast(r.sent ? (r.drafted ? `Test draft saved, addressed to ${nv.mail.user}` : `Test sent to ${nv.mail.user}`) : "The test wasn't sent", !r.sent);
+    else { w.progress = { ...w.progress, done: w.progress.total }; nwPaintProgress(); }
+    w.result = { ...r, test };
+    if (test && (r.failed.length || r.skipped.length)) await ask({ title: "The test wasn't sent", message: `<ul>${r.failed.map((f) => `<li>${esc(f.name)}: ${esc(f.error)}</li>`).join("")}</ul>`, choices: [{ label: "OK", value: true, primary: true }] });
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    clearInterval(poll);
+    w.busy = false;
+    w.test = false;
+    await refreshNotify();
+    if (w.result && !w.result.test) w.sel.clear();
+    if (S.view === "notifications") { renderWizard(); renderLog(); }
+  }
 }
 
 function renderLog() {
   const el = $("#nLog");
-  const log = S.nv.log.filter((l) => l.kind !== "import").slice(0, 12);
+  if (!el) return;
+  const log = S.nv.log.filter((l) => l.kind !== "import");
   el.innerHTML = log.length ? `<table class="t"><thead><tr><th>When</th><th>Kind</th><th>To</th><th>Subject</th><th>Result</th></tr></thead><tbody>${log.map((l) => `<tr>
     <td class="nowrap">${esc(when(l.at))}</td><td>${esc({ manual: "Manual", auto: "Automatic", test: "Test" }[l.kind] || l.kind)}</td>
     <td>${esc(l.person || "")}<div class="sub">${esc((l.to || []).join(", "))}</div></td><td><div class="sub" style="color:var(--text-2)">${esc(l.subject || "")}</div></td>
-    <td>${l.ok ? '<span class="chip good">Sent</span>' : `<span class="chip crit" title="${esc(l.error || "")}">Not sent</span><div class="sub" style="white-space:normal">${esc(l.error || "")}</div>`}</td></tr>`).join("")}</tbody></table>`
+    <td>${l.ok ? `<span class="chip good">${l.drafted ? "Drafted" : "Sent"}</span>` : `<span class="chip crit" title="${esc(l.error || "")}">Not sent</span><div class="sub" style="white-space:normal">${esc(l.error || "")}</div>`}</td></tr>`).join("")}</tbody></table>`
     : '<p class="dim" style="margin:0">Nothing has been sent yet.</p>';
 }
 
 async function previewEmail(key) {
+  const m = S.nv.manual;
   try {
-    const pv = await api("/api/notify/preview", { method: "POST", body: { key, subject: S.nSubject, message: S.nMessage } });
+    const pv = await api("/api/notify/preview", { method: "POST", body: { key, subject: m.subject, message: m.message, scopes: m.scopes, content: m.content } });
     await ask({
       title: "Preview", wide: true,
-      message: `<p class="dim">To ${esc(pv.to.join(", ")) || "(no email on file)"}<br>Subject: ${esc(pv.subject)}</p><div class="mail-preview">${pv.html}</div>`,
+      message: `<p class="dim">To ${esc(pv.to.join(", ")) || "(no email on file)"}<br>Subject: ${esc(pv.subject)}${pv.attachments?.length ? `<br>Attached: ${esc(pv.attachments.join(", "))}` : ""}</p><div class="mail-preview">${pv.html}</div>`,
       choices: [{ label: "Close", value: true, primary: true }],
     });
   } catch (e) { toast(e.message, true); }
-}
-
-async function sendEmails(test) {
-  const nv = S.nv;
-  if (S.sending) return;
-  if (!nv.ready) { toast(nv.mail.reason, true); return; }
-  const keys = [...S.nSel];
-  if (!keys.length) return;
-  if (!test) {
-    const names = keys.map((k) => nv.people.find((p) => p.key === k)?.name).filter(Boolean);
-    const ok = await ask({
-      title: `Email ${plural(keys.length, "person", "people")}?`,
-      message: `<p>Each person gets their own email from <b>${esc(nv.mail.user)}</b> with your message and a table of their paperwork, discipline details included.</p>
-        <p class="dim">${esc(names.slice(0, 8).join(", "))}${names.length > 8 ? `, and ${names.length - 8} more` : ""}</p>${keys.length > nv.max_batch ? `<p>That is more than ${nv.max_batch}, the most closet sends at once.</p>` : ""}`,
-      choices: [{ label: "Cancel", value: null }, { label: "Send", value: true, primary: true }],
-    });
-    if (!ok) return;
-  }
-  S.sending = true;
-  renderPeople();
-  try {
-    const r = await api("/api/notify/send", { method: "POST", body: { keys: test ? keys.slice(0, 1) : keys, subject: S.nSubject, message: S.nMessage, test } });
-    if (test) toast(r.sent ? `Test sent to ${nv.mail.user}` : "The test wasn't sent", !r.sent);
-    else toast(r.sent ? `Sent ${plural(r.sent, "email")}${r.failed.length ? `, ${r.failed.length} failed` : ""}` : "Nothing was sent", !r.sent);
-    if (r.failed.length || r.skipped.length || r.aborted) {
-      await ask({
-        title: "Some emails weren't sent",
-        message: `${r.failed.length ? `<p><b>Failed</b></p><ul>${r.failed.map((f) => `<li>${esc(f.name)}: ${esc(f.error)}</li>`).join("")}</ul>` : ""}${r.skipped.length ? `<p><b>Skipped</b></p><ul>${r.skipped.map((f) => `<li>${esc(f.name)}: ${esc(f.reason)}</li>`).join("")}</ul>` : ""}${r.aborted ? "<p>Sending stopped early because every remaining email would have failed the same way.</p>" : ""}`,
-        choices: [{ label: "OK", value: true, primary: true }],
-      });
-    }
-    if (!test && !r.failed.length) S.nSel.clear();
-  } catch (e) {
-    toast(e.message, true);
-  } finally {
-    S.sending = false;
-    await refreshNotify();
-    if (S.view === "notifications") { renderPeople(); renderLog(); }
-  }
 }
 
 // ---- linking a new cadet to a contact that's already in the list

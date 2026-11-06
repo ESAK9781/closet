@@ -69,9 +69,9 @@ test("settings has a bar of sub-tabs fixed to the top, and the tab is in the add
 test("nothing is connected: the tab explains, sending is disabled, automatic updates can't be turned on", async () => {
   await go("notifications");
   assert.match(await page.textContent("#main"), /No Gmail account is connected/);
-  assert.ok(await page.$eval("#nSend", (b) => b.disabled));
+  assert.match(await page.textContent("#main"), /Nothing can be sent until then/);
   const err = await page.evaluate(() => window.closet.api("PUT", "/api/notify/auto", { enabled: true }).then(() => "", (e) => e.message));
-  assert.match(err, /Connect a Gmail account first/);
+  assert.match(err, /Set up email first/);
   const sent = await page.evaluate(() => window.closet.api("POST", "/api/notify/send", { keys: ["x"] }).then(() => "", (e) => e.message));
   assert.match(sent, /Gmail/);
   assert.equal(mail().length, 0);
@@ -86,7 +86,7 @@ test("connect Gmail, then import a sheet: names are matched to the forms' spelli
   await page.fill("#gmPass", "abcd efgh ijkl mnop");
   await page.fill("#gmName", "First Sergeant");
   await page.click("#gmConnect");
-  await page.waitForSelector("#gmailTest");
+  await page.waitForSelector("#mailTest");
   assert.match(await page.textContent("#main"), /first\.sergeant@gmail\.com/);
   assert.ok(!JSON.stringify(await state()).includes("abcdefgh"), "the password never comes back to the page");
 
@@ -143,31 +143,69 @@ test("signature: a switch in settings adds closing lines to the end of the email
   assert.match(await page.textContent(".switch .lbl"), /On/);
 });
 
-test("the Notifications tab: preview, test send, and a real send; people without an email can't be picked", async () => {
+test("the Notifications wizard: message, recipients (five ways), then review and send with progress", async () => {
   await go("notifications");
-  await page.waitForSelector("#nTable table");
-  const noEmail = await page.$eval('tr:has-text("Alex Brown") [data-nsel]', (c) => c.disabled);
-  assert.ok(noEmail, "no email on file, so not selectable");
+  await page.waitForSelector("#nSubject");
+  assert.equal(await page.$$eval(".wiz-step", (e) => e.length), 3);
+  assert.equal(await page.$eval("#nSubject", (e) => e.value), "Conduct paperwork update", "starts from the saved default");
   await page.fill("#nSubject", "Update for {first_name}");
   await page.fill("#nMessage", "Hi {first_name},\nhere is where things stand.");
+  await page.check('input[name="nScope"][value="all"]');
+  await page.waitForTimeout(900);
+  assert.equal((await nv()).manual.subject, "Update for {first_name}", "the message is saved on the server");
+  // it survives leaving the screen
+  await go("settings");
+  await go("notifications");
+  assert.equal(await page.$eval("#nMessage", (e) => e.value), "Hi {first_name},\nhere is where things stand.");
+
+  await page.click("#nwNext");
+  await page.waitForSelector("[data-nmode]");
+  assert.deepEqual(await page.$$eval("[data-nmode]", (b) => b.map((x) => x.textContent)), ["Pick people", "One person", "By class year", "Outstanding paperwork", "Everyone"]);
+  assert.ok(await page.$eval('tr:has-text("Alex Brown") [data-nsel]', (c) => c.disabled), "no email on file, so not selectable");
+  assert.ok(await page.$eval("#nwNext", (b) => b.disabled), "nobody picked yet");
+
+  // "Everyone" fills the list from whoever has paperwork of the chosen kind
+  await page.click('[data-nmode="everyone"]');
+  assert.match(await page.textContent("#nwBar"), /\d+ (person|people) will be emailed/);
+  await page.click('[data-nmode="outstanding"]');
+  assert.ok(await page.$("#nwBar"));
+  // by class year: tick several classes at once
+  await page.click('[data-nmode="class"]');
+  const yearBoxes = await page.$$("[data-nyear]");
+  if (yearBoxes.length) {
+    assert.match(await page.textContent("#nwBar"), /0 people will be emailed/, "nothing ticked yet");
+    await page.click("#nYearAll");
+    assert.equal(await page.$$eval("[data-nyear]:checked", (e) => e.length), yearBoxes.length, "every class can be ticked together");
+  }
+  // "One person" is a search; it picks exactly one
+  await page.click('[data-nmode="one"]');
+  await page.fill("#nQ", "Daniel");
+  await page.check('tr:has-text("Daniel Kim") [data-none]');
+  assert.match(await page.textContent("#nwBar"), /1 person will be emailed/);
+  // picking by hand
+  await page.click('[data-nmode="manual"]');
+  await page.check('tr:has-text("Daniel Kim") [data-nsel]');
+  await page.check('tr:has-text("Kevin Lee") [data-nsel]');
+  assert.match(await page.textContent("#nwBar"), /2 people will be emailed/);
+  await page.click("#nwNext");
+
+  await page.waitForSelector("#nSend");
+  assert.match(await page.textContent("#nSend"), /Send to 2 people/);
   await page.click('tr:has-text("Daniel Kim") [data-npreview]');
   assert.match(await modalTitle(), /Preview/);
   const html = await page.innerHTML(".mail-preview");
   assert.match(html, /here is where things stand/);
-  assert.match(html, /Waiting on/);
-  assert.match(html, /Rewards \/ sanctions/);
+  assert.match(html, /<b>Waiting on/);
   await click("Close");
-  await page.check('tr:has-text("Daniel Kim") [data-nsel]');
-  await page.check('tr:has-text("Kevin Lee") [data-nsel]');
   await page.click("#nTest");
-  await until(page, () => mail().length >= 1, 20000).catch(() => {});
   await page.waitForFunction(() => /Test sent/.test(document.querySelector("#toasts")?.textContent || ""), null, { timeout: 20000 });
   assert.deepEqual(mail()[0].to, ["first.sergeant@gmail.com"]);
   assert.match(mail()[0].subject, /^\[TEST/);
   await page.click("#nSend");
   assert.match(await modalTitle(), /Email 2 people/);
   await click("Send");
-  await page.waitForFunction(() => /Sent 2 emails/.test(document.querySelector("#toasts")?.textContent || ""), null, { timeout: 30000 });
+  await page.waitForSelector("#nwAgain", { timeout: 30000 });
+  assert.match(await page.textContent("#nwBody"), /Sent/);
   const m = mail().slice(1);
   assert.equal(m.length, 2);
   assert.deepEqual(m.map((x) => x.to[0]).sort(), ["daniel.kim@school.edu", "klee@school.edu"]);
@@ -175,7 +213,50 @@ test("the Notifications tab: preview, test send, and a real send; people without
   assert.equal(dan.subject, "Update for Daniel");
   assert.ok(dan.text.startsWith("Hi Daniel,"));
   assert.match(dan.html, /<table/);
+  await page.click("#nwAgain");
+  await page.waitForSelector("#nSubject");
+  assert.equal(await page.$eval("#nMessage", (e) => e.value), "Hi {first_name},\nhere is where things stand.", "the next notification starts from the same message");
+  await go("notifications/recent");
   assert.match(await page.textContent("#nLog"), /Sent/);
+});
+
+test("Notifications has two sub-tabs: the send wizard and what was recently sent", async () => {
+  await go("notifications");
+  assert.deepEqual(await page.$$eval(".set-tabs a", (a) => a.map((x) => x.textContent)), ["Send a notification", "Recently sent"]);
+  assert.ok(await page.$("#nwBody"));
+  assert.equal(await page.$("#nLog"), null, "the log is not on the wizard's page");
+  await page.click('.set-tabs a:has-text("Recently sent")');
+  await page.waitForSelector("#nLog");
+  assert.match(await page.evaluate(() => location.hash), /notifications.recent/);
+  assert.equal(await page.$("#nwBody"), null);
+});
+
+test("long recipient lists are paginated, and selecting all matching reaches past the page", async () => {
+  await go("notifications");
+  await page.waitForSelector("#nwBody");
+  // pretend the roster is large: 60 people cloned from a real one
+  await page.evaluate(() => {
+    const base = S.nv.people.find((p) => p.emails.length);
+    S.nv.people = Array.from({ length: 60 }, (_, i) => ({ ...base, key: "k" + i, name: "Person " + String(i + 1).padStart(2, "0"), emails: ["p" + i + "@school.edu"] }));
+    S.nw = nwFresh();
+    S.nw.step = 2;
+    renderWizard();
+  });
+  assert.equal(await page.$$eval("#nwBody tbody tr", (r) => r.length), 25, "one page of names");
+  assert.match(await page.textContent(".pager"), /Showing 1.25 of 60/);
+  await page.click('.pager button:has-text("Next")');
+  assert.match(await page.textContent(".pager"), /Showing 26.50 of 60/);
+  assert.match(await page.textContent("#nwBody tbody tr"), /Person 26/);
+  await page.click('.pager [aria-label="Page 3"]');
+  assert.equal(await page.$$eval("#nwBody tbody tr", (r) => r.length), 10, "the last, shorter page");
+  await page.click("#nAll");
+  assert.match(await page.textContent("#nwBar"), /60 people will be emailed/, "every match, not just the visible page");
+  await page.click("#nwNext");
+  await page.waitForSelector("#nSend");
+  assert.equal(await page.$$eval("#nwBody tbody tr", (r) => r.length), 25, "the review list is paged too");
+  assert.match(await page.textContent(".pager"), /of 60/);
+  await go("settings"); // leaving drops the made-up roster; the real one is fetched again
+  await go("notifications");
 });
 
 test("automatic updates: off for everyone, opt people in, and only a step passing after turning it on is announced", async () => {
@@ -221,7 +302,7 @@ test("disconnecting Gmail turns automatic updates off and keeps the contact list
   assert.equal(v.auto.enabled, false);
   assert.equal(v.contacts.length, 5);
   await go("notifications");
-  assert.ok(await page.$eval("#nSend", (b) => b.disabled));
+  assert.match(await page.textContent("#main"), /Nothing can be sent until then/);
 });
 
 test("no page errors", () => {

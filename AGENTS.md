@@ -26,6 +26,7 @@ dump folder are never moved, and only changed by the few explicit actions listed
 | `src/core/people.js`, `contacts.js` | Name-format matching ("Last, First M", rank, order, typos within two letters); reading a contact spreadsheet (csv/tsv/xlsx via `backup.js`'s zip reader) into name/email pairs |
 | `src/core/tracker.js`, `xlsx.js`, `cloud.js` | Served tours/confinements and balances: reads the serving log of the discipline workbook, optionally overwrites its conduct log, builds a blank workbook. Every sheet name, row and heading is a setting (`settings.tracker`). `xlsx.js` edits a workbook in place (other parts of the zip are kept byte for byte) with no spreadsheet dependency |
 | `src/main/mailer.js` | Gmail via nodemailer; the app password is encrypted with `safeStorage` in userData `config.json`, never in metadata or backups |
+| `src/main/outlook.js` | Outlook provider: drives classic Outlook over COM from a hidden PowerShell (message passed as base64 on stdin), either sending or saving drafts. Never opens a mail folder or reads mail. `config.mail` (provider, mode, probed address) lives in userData, not metadata |
 | `src/core/records.js` | Pure functions turning raw slot values + overrides into tracker records and sheet rows |
 | `src/core/templates.js` | The *meaning* of each template field (semantic key, label, section) and the routing-flag definitions |
 | `src/core/pool.js`, `worker.js`, `extract.js`, `imaging.js`, `assignment.js` | The pdf.js-based parser: template matching, field extraction, worker-thread pool |
@@ -110,7 +111,10 @@ instead of the renderer polling; `load()` in `app.js` re-fetches the whole snaps
 
 ## Email
 
+- Manual notifications are a three-step wizard (message, recipients, review and send) in `app.js`. Its message, paperwork scope (`SCOPES` in `notify.js`) and detail switches are saved in `notify.json` (`state.manual`), separate from `state.content`, which only automatic updates use. Every way of picking people drops anyone with no paperwork in scope except "One person". Sends report progress through `GET /api/notify/progress`. Keep email wording free of zero counts and step tallies, and bold only what the reader must act on.
+- The mailer is Gmail or Outlook (`config.mail.provider`); Outlook has a drafts/send mode. In drafts mode `status().drafts` is true: manual sends are logged and reported as drafted, and automatic updates refuse to run (`autoReady()`). Changing provider or mode turns automatic updates off.
 - Every send path goes through `Notifier.ready()`; with no account the answer is a sentence, not an exception. Keep it that way, and keep automatic sends from ever throwing into the store.
+- `notify.content.attach_final` (off by default) attaches the final copy of each fully signed (`counted`) Form 10 via `Notifier.finalCopies()`: read-only (the dump folder is never touched), capped by count and size, rejected/archived never. Email HTML is deliberately plain (default font, no colour, no icons); keep it that way.
 - Credentials must never enter `metadata/` (backups and sync would carry them). Tests use a fake mailer or `CLOSET_MAIL_OUTBOX` (writes messages to a folder); never send real mail from a test.
 - Automatic updates compare each form's routing flags with `notify.json`'s `seen` baseline; enabling, a new form, a parser bump and a reset all re-baseline silently so nothing old is announced.
 

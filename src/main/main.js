@@ -109,12 +109,14 @@ async function route(method, url, body) {
   if (method === "POST" && p === "/api/notify/tie") { store.notify.answerTie(String(body?.id || ""), String(body?.cadet || ""), body?.yes === true); return { version: store.version }; }
   if (method === "PUT" && p === "/api/notify/signature") return store.notify.setSignature(body || {});
   if (method === "PUT" && p === "/api/notify/content") return store.notify.setContent(body || {});
+  if (method === "PUT" && p === "/api/notify/draft") return store.notify.setDraft(body || {});
+  if (method === "GET" && p === "/api/notify/progress") return store.notify.sendProgress || { running: false, total: 0, done: 0, current: null, failed: 0 };
   if (method === "GET" && p === "/api/tracker") return store.tracker.view(store.snapshot(), q.get("before") || "");
   if (method === "POST" && p === "/api/tracker/pull") return store.tracker.pull();
   if (method === "POST" && p === "/api/tracker/push") return store.tracker.push();
   if (method === "PUT" && p === "/api/notify/auto") return store.notify.setAuto(body || {});
-  if (method === "POST" && p === "/api/notify/preview") return store.notify.preview({ key: String(body?.key || ""), subject: body?.subject, message: body?.message }, store.snapshot());
-  if (method === "POST" && p === "/api/notify/send") return store.notify.send({ keys: body?.keys, subject: body?.subject, message: body?.message, test: body?.test === true }, store.snapshot());
+  if (method === "POST" && p === "/api/notify/preview") return store.notify.preview({ key: String(body?.key || ""), subject: body?.subject, message: body?.message, scope: body?.scopes ?? body?.scope, content: body?.content }, store.snapshot());
+  if (method === "POST" && p === "/api/notify/send") return store.notify.send({ keys: body?.keys, subject: body?.subject, message: body?.message, scope: body?.scopes ?? body?.scope, content: body?.content, test: body?.test === true }, store.snapshot());
   if (method === "POST" && p === "/api/sync/pull") return store.sync.pull();
   if (method === "POST" && p === "/api/sync/resolve") return store.sync.resolve(Array.isArray(body?.decisions) ? body.decisions : []);
   if (method === "POST" && p === "/api/sync/push") return store.sync.push();
@@ -241,12 +243,35 @@ function registerIpc() {
     store.bump();
     return { ok: true };
   });
-  ipcMain.handle("closet:gmail-test", async () => {
+  // Provider (Gmail or Outlook) and Outlook's send/drafts mode. Anything that changes where mail goes
+  // turns automatic updates off, so they never start sending somewhere new unannounced.
+  ipcMain.handle("closet:mail-settings", (_e, patch) => {
+    try {
+      mailer.setSettings({ provider: patch?.provider, outlook_mode: patch?.outlook_mode });
+      try { store.notify.setAuto({ enabled: false }); } catch { /* already off */ }
+      store.bump();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:outlook-check", async () => {
+    try {
+      const user = await mailer.checkOutlook();
+      store.bump();
+      return { ok: true, user };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("closet:mail-test", async () => {
     const st = mailer.status();
     if (!st.configured) return { ok: false, error: st.reason };
+    const via = st.provider === "outlook" ? "Outlook" : "Gmail";
+    const line = `This is a test from closet. ${via} is set up and can ${st.drafts ? "save drafts" : "send email"}.`;
     try {
-      await mailer.send({ to: [st.user], subject: "closet test email", text: "This is a test from closet. Your Gmail account is connected and can send email.", html: "<p>This is a test from closet. Your Gmail account is connected and can send email.</p>" });
-      return { ok: true, to: st.user };
+      await mailer.send({ to: [st.user], subject: "closet test email", text: line, html: `<p>${line}</p>` });
+      return { ok: true, to: st.user, drafted: st.drafts };
     } catch (e) {
       return { ok: false, error: String(e?.message || e) };
     }

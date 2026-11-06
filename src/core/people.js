@@ -29,6 +29,27 @@ export function nameParts(raw) {
   };
 }
 
+/** One word of a name as it was written ("O'Brien", "Mary-Jane"), found by its letters; shouting caps are softened. */
+function written(raw, word) {
+  const w = String(raw ?? "").split(/[\s,]+/).find((t) => t.replace(/[^A-Za-z-]/g, "").toLowerCase() === word);
+  if (!w) return titleCase(word);
+  const t = w.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "");
+  return t.length > 1 && t === t.toUpperCase() ? titleCase(t.toLowerCase()) : t;
+}
+
+/** "C2C Doe, John A." -> "John". Never a rank or an initial. */
+export function firstName(raw) {
+  const p = nameParts(raw);
+  return p.given[0] ? written(raw, p.given[0]) : collapse(raw).split(" ")[0] || "";
+}
+
+/** "C2C Doe, John A." and "John A. Doe Jr." -> "Doe". A one-word name is its own last name. */
+export function lastName(raw) {
+  const p = nameParts(raw);
+  const f = p.family || p.core[0];
+  return f ? written(raw, f) : "";
+}
+
 /** "doe, john a" -> "John A Doe": the way recipient names are written everywhere else in closet. */
 export function displayName(raw) {
   const p = nameParts(raw);
