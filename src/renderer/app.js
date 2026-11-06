@@ -2833,18 +2833,18 @@ async function autoProcess(step) {
   const ok = await ask({
     title: "Mark AOC/AMT approved?",
     message: `<p>Use this when the AMT has told you this form is approved but didn't send a signed copy.</p>
-      <p>The empty AOC/AMT signature box is removed and this stamp goes in its place. The PDF is updated (the original is kept in the metadata folder) and the AOC/AMT step is marked done.${d.record.form_type === "F174" ? " The commander date is filled in too." : ""}</p>
-      <div class="stamp-demo"><small>Marked AOC/AMT approved by First Sergeant (unofficial)</small><b>AOC/AMT Approved</b></div>
+      <p>The empty AOC/AMT signature box is removed and a red X is drawn over the signature field. The PDF is updated (the original is kept in the metadata folder) and the AOC/AMT step is marked done.${d.record.form_type === "F174" ? " The commander date is filled in too." : ""}</p>
+      <div class="stamp-demo" aria-label="A red X over the signature field"><svg viewBox="0 0 200 26" preserveAspectRatio="none" aria-hidden="true"><path d="M2 2L198 24M2 24L198 2"/></svg></div>
       <p class="dim">This is not a signature. It only records that you were told it's approved.</p>`,
-    choices: [{ label: "Cancel", value: null }, { label: "Apply stamp", value: true, primary: true }],
+    choices: [{ label: "Cancel", value: null }, { label: "Mark approved", value: true, primary: true }],
   });
   if (!ok) return;
   try {
     await api(`/api/forms/${d.id}/approve-aoc`, { method: "POST" });
-    toast("Stamped and marked AOC/AMT approved");
+    toast("Marked AOC/AMT approved");
     await load();
     if (S.detail?.id === d.id) openForm(d.id, { keepPage: true, silent: true, host: S.host });
-  } catch (e) { toast("Couldn't stamp it: " + e.message, true); }
+  } catch (e) { toast("Couldn't mark it: " + e.message, true); }
 }
 
 // Copy every active form still missing a chosen signature into a folder the user picks.

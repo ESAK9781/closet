@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
-import { PDFDocument, PDFHexString, PDFName } from "pdf-lib";
+import { PDFArray, PDFDocument, PDFHexString, PDFName, PDFString } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { fillSlots, xrefHealth } from "../src/core/signable.js";
@@ -217,7 +217,7 @@ test("per form: only the chosen form is initialed", async () => {
   assert.equal(fs.statSync(dir("dump", form("Olly Other").filename)).mtimeMs, olly0);
 });
 
-test("AOC/AMT approval stamp: the empty box goes, a red stamp and the flags take its place", async () => {
+test("AOC/AMT approval: the empty box goes, a red X and the flags take its place", async () => {
   const lee = form("Lee, Kevin");
   store.updateForm(lee.id, { overrides: { recipient_signed: true } });
   assert.equal(form("Lee, Kevin").record.aoc_signed, false);
@@ -239,7 +239,10 @@ test("AOC/AMT approval stamp: the empty box goes, a red stamp and the flags take
   const stamps = (await (await (await task.promise).getPage(1)).getAnnotations()).filter((a) => a.subtype === "Stamp");
   task.destroy();
   assert.equal(stamps.length, 1);
-  assert.match(stamps[0].contentsObj?.str || stamps[0].contents || "", /AOC\/AMT Approved/);
+  const note = stamps[0].contentsObj?.str || stamps[0].contents || "";
+  assert.match(note, /approved by First Sergeant \(unofficial\)/);
+  assert.ok(!/AOC\/AMT Approved/.test(note), "just the X, not the old boxed wording");
+  assert.equal(store.metas.get(lee.id).stamp_x, true, "new marks are already the X, so nothing to migrate");
   assert.ok(fs.readdirSync(dir("metadata", "backups")).some((n) => n.startsWith(lee.id)), "original kept");
   await assert.rejects(store.approveAoc(lee.id), /already has its AOC\/AMT/);
 });
@@ -256,6 +259,43 @@ test("AOC/AMT approval on an AF 174 stamps the commander box and dates the comma
   const d = new Date();
   const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   assert.equal(s.commander_date.value, iso, "this form writes its dates as ISO, so the written date matches");
+});
+
+test("forms marked with the old boxed stamp get the X instead, once, with the original kept", async () => {
+  const olly = form("Olly Other");
+  const file = dir("dump", olly.filename);
+  // build what an older closet wrote: a boxed "AOC/AMT Approved" stamp annotation
+  const doc = await PDFDocument.load(fs.readFileSync(file));
+  const ctx = doc.context;
+  const ap = ctx.register(ctx.stream("0.78 0.05 0.05 RG 1 1 198 12 re S", { Type: "XObject", Subtype: "Form", BBox: [0, 0, 200, 14] }));
+  const stamp = ctx.register(ctx.obj({ Type: "Annot", Subtype: "Stamp", Rect: [300, 40, 500, 54], F: 4, AP: { N: ap }, Contents: PDFHexString.fromText("Marked AOC/AMT approved by First Sergeant (unofficial). AOC/AMT Approved 05 Nov 26"), T: PDFString.of("First Sergeant") }));
+  const page = doc.getPages()[0];
+  const annots = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
+  if (annots) annots.push(stamp); else page.node.set(PDFName.of("Annots"), ctx.obj([stamp]));
+  fs.writeFileSync(file, await doc.save());
+  store.scan();
+  await settle();
+  const m = store.metas.get(olly.id);
+  m.history = [...(m.history || []), { at: new Date().toISOString(), what: "Marked AOC/AMT approved by First Sergeant (unofficial): added a stamp" }];
+  store.save(m);
+  const readNotes = async () => {
+    const task = pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(file)), verbosity: 0 });
+    const out = (await (await (await task.promise).getPage(1)).getAnnotations()).filter((a) => a.subtype === "Stamp").map((a) => a.contentsObj?.str || a.contents || "");
+    task.destroy();
+    return out;
+  };
+  assert.match((await readNotes())[0], /AOC\/AMT Approved/);
+  const before = fs.readFileSync(file);
+  assert.equal(await store.migrateStamps(), 1);
+  await settle();
+  const notes = await readNotes();
+  assert.equal(notes.length, 1, "the same annotation, not a second one");
+  assert.ok(!/AOC\/AMT Approved/.test(notes[0]));
+  assert.ok(fs.readFileSync(file).subarray(0, before.length).equals(before), "appended to the original");
+  assert.ok(fs.readdirSync(dir("metadata", "backups")).some((n) => n.startsWith(olly.id)), "original kept");
+  assert.equal(store.metas.get(olly.id).stamp_x, true);
+  assert.match(store.metas.get(olly.id).history.at(-1).what, /Replaced the AOC\/AMT approval stamp with an X/);
+  assert.equal(await store.migrateStamps(), 0, "once is enough");
 });
 
 test("approval refuses a box that already holds a digital signature, and an F10 with no AOC step done wrongly", async () => {

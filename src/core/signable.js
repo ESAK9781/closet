@@ -924,13 +924,22 @@ function dropReaderRights(P) {
   }
 }
 
+/** The appearance of the approval mark: a plain red X from corner to corner of its box. */
+function xAppearance(ctx, W, H) {
+  const m = Math.min(1.5, W / 4, H / 4); // keep the strokes just inside the box
+  const content = `q ${RED} RG 1.4 w 1 J 1 j ${m.toFixed(2)} ${m.toFixed(2)} m ${(W - m).toFixed(2)} ${(H - m).toFixed(2)} l S ${m.toFixed(2)} ${(H - m).toFixed(2)} m ${(W - m).toFixed(2)} ${m.toFixed(2)} l S Q`;
+  return ctx.register(ctx.stream(content, { Type: "XObject", Subtype: "Form", BBox: [0, 0, W, H] }));
+}
+
+const STAMP_NOTE = "Marked AOC/AMT approved by First Sergeant (unofficial)";
+
 /**
  * Mark a form's AOC/AMT (or commander) signature as approved without a real signature: removes the
- * unfilled signature box and puts a red "approved by First Sergeant (unofficial)" stamp where it was,
- * extending `expandDown` points below the box into empty page. A box holding a real signature is
- * never touched. Any `dates` ({page, rect, text}) are then typed into their boxes.
+ * unfilled signature box and draws a red X over where it was (extending `expandDown` points below the
+ * box into empty page). A box holding a real signature is never touched. Any `dates` ({page, rect,
+ * text}) are then typed into their boxes. The X is an annotation whose note says who marked it.
  *
- * @param {object} o { page, rect (top-left normalized), expandDown (pt), small, big, date, dates: [] }
+ * @param {object} o { page, rect (top-left normalized), expandDown (pt), label, dates: [] }
  * @returns {Promise<{bytes: Buffer, mode: string, removed: boolean}>}
  */
 export async function approveAoc(bytes, o) {
@@ -955,52 +964,11 @@ export async function approveAoc(bytes, o) {
   }
   const [x0, y0, x1, y1] = toUser(g, o.rect);
   const lo = Math.max(g.view[1] + 2, y0 - (o.expandDown || 0));
-  const W = x1 - x0;
-  const H = y1 - lo;
-  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const reg = await doc.embedFont(StandardFonts.Helvetica);
-  const small = pdfText(o.small);
-  const big = pdfText(o.big);
-  const date = o.date ? pdfText(o.date) : "";
-  const fit = (f, t, size, max) => { while (size > 4 && f.widthOfTextAtSize(t, size) > max) size -= 0.25; return size; };
-  const esc = (t) => t.replace(/[()\\]/g, (c) => "\\" + c);
-  // Three layouts, always inside the field itself: a tall box stacks three lines; a medium one two;
-  // a short one (the F10's 14 pt AOC/AMT box) puts the big words on the left and the small text and
-  // date stacked beside them.
-  const mode = H >= 36 ? "tall" : H >= 22 ? "medium" : "compact";
-  const txt = (f, name, t, size, x, y) => `q ${RED} rg BT /${name} ${size.toFixed(2)} Tf ${x.toFixed(2)} ${y.toFixed(2)} Td (${esc(t)}) Tj ET Q`;
-  const centered = (f, name, t, size, y) => txt(f, name, t, size, (W - f.widthOfTextAtSize(t, size)) / 2, y);
-  const lines = [];
-  let border = `q ${RED} RG ${RED} rg 1.3 w 1 1 ${(W - 2).toFixed(2)} ${(H - 2).toFixed(2)} re S 0.4 w 3 3 ${(W - 6).toFixed(2)} ${(H - 6).toFixed(2)} re S Q`;
-  if (mode === "compact") {
-    border = `q ${RED} RG 0.9 w 0.6 0.6 ${(W - 1.2).toFixed(2)} ${(H - 1.2).toFixed(2)} re S Q`;
-    const bigSize = fit(bold, big, Math.min(H - 4.5, 10), W * 0.5);
-    const smallSize = Math.min(4.6, fit(reg, small, 4.6, W * 0.62));
-    const bigW = bold.widthOfTextAtSize(big, bigSize);
-    const sideW = Math.max(reg.widthOfTextAtSize(small, smallSize), date ? reg.widthOfTextAtSize(date, smallSize) : 0);
-    const x0b = Math.max(3, (W - (bigW + 7 + sideW)) / 2);
-    lines.push(txt(bold, "F1", big, bigSize, x0b, H / 2 - bigSize * 0.35));
-    const sx = x0b + bigW + 7;
-    if (date) {
-      lines.push(txt(reg, "F2", small, smallSize, sx, H / 2 + 1.2));
-      lines.push(txt(reg, "F2", date, smallSize, sx, H / 2 - smallSize - 0.2));
-    } else lines.push(txt(reg, "F2", small, smallSize, sx, H / 2 - smallSize * 0.35));
-  } else {
-    const tall = mode === "tall";
-    const smallSize = fit(reg, small, tall ? 6 : 4.8, W - 10);
-    const bigSize = fit(bold, big, tall ? Math.min(16, H * 0.4) : Math.min(9.5, H - 14), W - 14);
-    const bigY = tall ? (H - smallSize - 5 - (date ? 10 : 2)) / 2 + (date ? 10 : 2) - bigSize * 0.33 : 6;
-    lines.push(centered(reg, "F2", small, smallSize, H - smallSize - 3.5), centered(bold, "F1", big, bigSize, bigY));
-    if (date && tall) lines.push(centered(reg, "F2", date, 6, 5));
-  }
-  const content = [border, ...lines].join("\n");
-  const fontRef = (name) => ctx.register(ctx.obj({ Type: "Font", Subtype: "Type1", BaseFont: name, Encoding: "WinAnsiEncoding" }));
-  const ap = ctx.register(ctx.stream(content, {
-    Type: "XObject", Subtype: "Form", BBox: [0, 0, W, H], Resources: { Font: { F1: fontRef("Helvetica-Bold"), F2: fontRef("Helvetica") } },
-  }));
+  const ap = xAppearance(ctx, x1 - x0, y1 - lo);
+  const note = pdfText(o.label || o.small || STAMP_NOTE);
   const stamp = ctx.obj({
     Type: "Annot", Subtype: "Stamp", Rect: [x0, lo, x1, y1], F: 4, P: page.ref, C: [0.78, 0.05, 0.05], AP: { N: ap },
-    Contents: PDFHexString.fromText(`${small}. ${big}${date ? ` ${date}` : ""}`), T: PDFString.of("First Sergeant"),
+    Contents: PDFHexString.fromText(note), T: PDFString.of("First Sergeant"),
   });
   const sRef = ctx.register(stamp);
   const annotsRaw = page.node.get(N("Annots"));
@@ -1016,4 +984,35 @@ export async function approveAoc(bytes, o) {
   let out = await finishPatch(P);
   if (o.dates?.length) out = { ...(await fillSlots(out.bytes, o.dates)), mode: out.mode };
   return { bytes: out.bytes, mode: out.mode, removed };
+}
+
+/**
+ * Forms stamped before the mark became a plain X carry the old boxed "AOC/AMT Approved" stamp. Swap
+ * the appearance of each such stamp for the X (same box, same annotation, appended as an update).
+ * @returns {Promise<{bytes: Buffer, mode: string, changed: number}>} `changed` is 0 when there was none
+ */
+export async function restampAoc(bytes) {
+  const P = await openPatch(bytes, "its stamp can't be replaced");
+  const { doc, ctx, touch } = P;
+  let changed = 0;
+  for (const page of doc.getPages()) {
+    const annotsRaw = page.node.get(N("Annots"));
+    const annots = annotsRaw instanceof PDFRef ? ctx.lookup(annotsRaw) : annotsRaw;
+    if (!(annots instanceof PDFArray)) continue;
+    for (const ref of annots.asArray()) {
+      const d = ref instanceof PDFRef ? ctx.lookup(ref) : ref;
+      if (!(d instanceof PDFDict) || text(d.lookup(N("Subtype"))) !== "Stamp" || text(d.lookup(N("T"))) !== "First Sergeant") continue;
+      if (!/AOC\/AMT Approved/.test(text(d.lookup(N("Contents"))))) continue; // only the old boxed stamp says this
+      const rect = d.lookup(N("Rect"));
+      const [x0, y0, x1, y1] = rect instanceof PDFArray ? rect.asArray().map((n) => n.asNumber()) : [];
+      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) continue;
+      d.set(N("AP"), ctx.obj({ N: xAppearance(ctx, x1 - x0, y1 - y0) }));
+      d.set(N("Contents"), PDFHexString.fromText(pdfText(STAMP_NOTE)));
+      if (ref instanceof PDFRef) touch(ref); else touch(page.ref);
+      changed++;
+    }
+  }
+  if (!changed) return { bytes, mode: "unchanged", changed: 0 };
+  const out = await finishPatch(P);
+  return { bytes: out.bytes, mode: out.mode, changed };
 }

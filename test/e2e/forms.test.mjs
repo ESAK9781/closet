@@ -87,15 +87,16 @@ test("viewer: unsaved edits disable the one-click buttons", async () => {
   assert.equal(await page.$eval('#drawer [data-act="auto:cadet_cc_initialed"]', (b) => b.disabled), false);
 });
 
-test("viewer: AOC/AMT approval stamp, with a confirmation first; flags set; one form only", async () => {
+test("viewer: AOC/AMT approval (a red X), with a confirmation first; flags set; one form only", async () => {
   await page.click('#drawer [data-act="auto:approve"]');
   assert.equal(await modalTitle(), "Mark AOC/AMT approved?");
-  assert.match(await page.textContent(".modal .stamp-demo"), /Marked AOC\/AMT approved by First Sergeant \(unofficial\)\s*AOC\/AMT Approved/);
+  assert.ok(await page.$(".modal .stamp-demo svg"), "the dialog shows the X it will draw");
+  assert.match(await page.textContent(".modal"), /red X is drawn over the signature field/);
   await page.click('.modal-actions .btn:text-is("Cancel")');
   await page.waitForTimeout(300);
   assert.equal(byFile(await state(), "Lee, Kevin").record.aoc_signed, false, "cancel changes nothing");
   await page.click('#drawer [data-act="auto:approve"]');
-  await page.click('.modal-actions .btn:text-is("Apply stamp")');
+  await page.click('.modal-actions .btn:text-is("Mark approved")');
   await until(page, (s) => byFile(s, "Lee, Kevin").record.aoc_signed === true && !s.status.queued, 120000);
   await page.waitForTimeout(700);
   const lee = byFile(await state(), "Lee, Kevin");

@@ -6,7 +6,7 @@ import path from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
 
 import { analyze, buildTemplate } from "./extract.js";
-import { addField, approveAoc, fillSlots, inspect } from "./signable.js";
+import { addField, approveAoc, fillSlots, inspect, restampAoc } from "./signable.js";
 import { FORM_TYPES } from "./templates.js";
 
 const templates = {};
@@ -22,11 +22,17 @@ try {
 const jobs = {
   analyze: (msg) => analyze(msg.file, templates, msg.hint, msg.renderDir, msg.tol),
   inspect: (msg) => inspect(readFileSync(msg.file), msg.target),
-  // removes the empty AOC/AMT signature box, stamps "approved (unofficial)", fills dates
+  // removes the empty AOC/AMT signature box, puts an X over it, fills dates
   approveAoc: async (msg) => {
     const r = await approveAoc(readFileSync(msg.file), msg.options);
     writeFileSync(msg.out, r.bytes);
     return { mode: r.mode, removed: r.removed };
+  },
+  // swaps an older boxed approval stamp for the X; writes msg.out only when there was one
+  restampAoc: async (msg) => {
+    const r = await restampAoc(readFileSync(msg.file));
+    if (r.changed) writeFileSync(msg.out, r.bytes);
+    return { changed: r.changed };
   },
   // types text into the form (or lays text boxes on it) and writes the result to msg.out
   fillSlots: async (msg) => {

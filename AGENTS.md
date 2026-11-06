@@ -91,7 +91,7 @@ instead of the renderer polling; `load()` in `app.js` re-fetches the whole snaps
   `save()` for edits to a user's PDF. Objects it creates must be registered (`ctx.register`): an
   embedded pdf-lib font that is never saved is a dangling reference.
 - The dump folder is edited by exactly three things: Upload/sync replacing a form, the bulk step
-  buttons, and the AOC/AMT stamp. The last two copy the original to `metadata/backups` first.
+  buttons, and the AOC/AMT approval mark (a red X over the signature field, `signable.approveAoc`). Forms marked by the earlier boxed stamp are converted once at startup by `Store.migrateStamps` (`meta.stamp_x`), with the usual backup. The last two copy the original to `metadata/backups` first.
 - Sync **never deletes a file it didn't create**, with one exception: a New-paperwork (intake) file that was added as a new form is removed from the intake folder, and only if its hash still matches what was pulled. Send folders are cleared only of ledger entries
   whose hash still matches; everything else is reported. Keep it that way: `test/sync.test.mjs`
   asserts it.

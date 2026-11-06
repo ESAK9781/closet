@@ -72,9 +72,11 @@ turned off in Settings → Bulk initials; Cadet CC: Section V box 3's date). Ini
 Where a form has no usable box, a text box is placed on top of the spot. The PDFs are updated (the
 originals are kept in `metadata/backups`) and the step is marked done. The same two buttons appear on
 a single form in the viewer, along with **Mark AOC/AMT approved**: for when the AMT says a form is
-approved but sends no signed copy. It removes the empty signature box, stamps the spot in red
-("Marked AOC/AMT approved by First Sergeant (unofficial)", "AOC/AMT Approved"), fills the commander
-date on an AF 174, and marks the step done. It's a one-form-at-a-time action by design.
+approved but sends no signed copy. It removes the empty signature box, draws a red X over the signature field
+(the PDF note says "Marked AOC/AMT approved by First Sergeant (unofficial)"), fills the commander
+date on an AF 174, and marks the step done. Forms marked by an older version, with the boxed "AOC/AMT
+Approved" stamp, get the X instead the first time closet starts (the originals are kept in
+`metadata/backups`). It's a one-form-at-a-time action by design.
 
 ### Backup and restore
 
@@ -231,7 +233,7 @@ tab shows the result.
 | `served.json` | What the discipline workbook's serving log said last time it was read |
 | `sheet-backups/` | The last ten copies of the workbook, saved before closet wrote into it |
 | `sync.json` | Sync state: when it started, what closet put in the send folders, files waiting for a decision |
-| `backups/` | The original of any PDF closet edited (bulk initials, approval stamp) |
+| `backups/` | The original of any PDF closet edited (bulk initials, the approval X) |
 
 **Settings → Clear metadata and rescan** starts over: it erases cached reads and edits (settings
 are kept) and reads every PDF again.

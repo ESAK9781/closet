@@ -11,6 +11,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 
+import { ensureLocal } from "./cloud.js";
 import { Notifier } from "./notify.js";
 import { TRACKER_DEFAULTS, Tracker, mergeTracker, upgradeTracker } from "./tracker.js";
 import { ParserPool } from "./pool.js";
@@ -141,6 +142,7 @@ export class Store extends EventEmitter {
     this.ready.then(() => {
       this.scan();
       this.watch();
+      this.migrateStamps().catch(() => {});
     });
   }
 
@@ -705,8 +707,8 @@ export class Store extends EventEmitter {
 
   /**
    * Mark one form's AOC/AMT approval without a signed copy (the AMT said yes, nothing came back):
-   * the empty signature box is removed and a red "approved by First Sergeant (unofficial)" stamp goes
-   * where it was, with any date box that goes with it filled. Single form only, on purpose.
+   * the empty signature box is removed and a red X goes over where it was, with any date box that
+   * goes with it filled. Single form only, on purpose.
    */
   async approveAoc(id) {
     const m = this.metas.get(id);
@@ -734,12 +736,13 @@ export class Store extends EventEmitter {
       const before = sha1File(src);
       const r = await this.pool.run("approveAoc", {
         file: src, out: tmp,
-        options: { page: at.page, rect: at.rect, expandDown: spec.expandDown, small: "Marked AOC/AMT approved by First Sergeant (unofficial)", big: "AOC/AMT Approved", date: todayText(false), dates },
+        options: { page: at.page, rect: at.rect, expandDown: spec.expandDown, label: "Marked AOC/AMT approved by First Sergeant (unofficial)", dates },
       });
       if (sha1File(src) !== before) throw new Error("the file changed while it was being edited; try again");
       this.backupAndReplace(m, src, tmp);
       (m.overrides ||= {}).aoc_signed = true;
-      m.history = [...(m.history || []), { at: now(), what: `Marked AOC/AMT approved by First Sergeant (unofficial): ${r.removed ? "empty signature box replaced with" : "added"} a stamp${dates.length ? " and dated the form" : ""}` }].slice(-60);
+      m.stamp_x = true; // already the X: nothing to migrate
+      m.history = [...(m.history || []), { at: now(), what: `Marked AOC/AMT approved by First Sergeant (unofficial): ${r.removed ? "empty signature box replaced with" : "added"} an X over the signature field${dates.length ? " and dated the form" : ""}` }].slice(-60);
       this.save(m);
       this.reparse(id);
       this.scan();
@@ -748,6 +751,44 @@ export class Store extends EventEmitter {
     } finally {
       fs.rmSync(tmp, { force: true });
     }
+  }
+
+  /**
+   * Forms marked approved while the mark was still a boxed "AOC/AMT Approved" stamp get the X instead.
+   * Runs once per form (`stamp_x`), keeps the original under metadata/backups like every PDF edit, and
+   * leaves a form alone (to try again next start) if it can't be read or changed under us.
+   */
+  async migrateStamps() {
+    const old = /Marked AOC\/AMT approved by First Sergeant \(unofficial\)/;
+    const todo = [...this.metas.values()].filter((m) => !m.stamp_x && (m.history || []).some((h) => old.test(h.what)));
+    if (!todo.length) return 0;
+    await this.ready;
+    await this.whenIdle().catch(() => {});
+    const work = path.join(this.meta, "bulk");
+    fs.mkdirSync(work, { recursive: true });
+    let changed = 0;
+    for (const m of todo) {
+      const src = this.pdfPath(m.id);
+      if (!src) continue;
+      const tmp = path.join(work, `${m.id}-x.pdf`);
+      try {
+        ensureLocal(src);
+        const before = sha1File(src);
+        const r = await this.pool.run("restampAoc", { file: src, out: tmp });
+        if (sha1File(src) !== before) continue;
+        if (r.changed) {
+          this.backupAndReplace(m, src, tmp);
+          m.history = [...(m.history || []), { at: now(), what: "Replaced the AOC/AMT approval stamp with an X over the signature field" }].slice(-60);
+          changed++;
+        }
+        m.stamp_x = true;
+        this.save(m);
+      } catch { /* unreadable or busy: try again next start */ } finally {
+        fs.rmSync(tmp, { force: true });
+      }
+    }
+    if (changed) { this.scan(); this.bump(); }
+    return changed;
   }
 
   /** Keep the file as it was under metadata/backups, then put the edited copy in its place. */
